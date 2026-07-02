@@ -2304,6 +2304,12 @@
     "settingsDescription": "Modifier le nom et le slug de votre organisation",
     "switchOrganization": "Changer d'organisation"
   },
+  "publicTools": {
+    "detailComingSoon": "Les détails complets, l'aperçu du contenu et le téléchargement arrivent bientôt.",
+    "metaDescription": "Parcourez le catalogue ouvert de compétences, d'intégrations et d'outils intégrés pour le travail juridique.",
+    "practiceArea": "Domaine de pratique",
+    "recommendedIn": "Recommandé dans {codes}"
+  },
   "search": {
     "aiRefine": "Améliorer la requête avec l’IA",
     "continueInChat": "Continuer dans le chat",

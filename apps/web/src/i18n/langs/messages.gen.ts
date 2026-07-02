@@ -2307,6 +2307,12 @@ type Messages = {
     "settingsDescription": "Edit your organization name and slug";
     "switchOrganization": "Switch organization";
   };
+  "publicTools": {
+    "detailComingSoon": "Full details, content preview, and download are coming soon.";
+    "metaDescription": "Browse the open catalogue of skills, integrations, and built-in tools for legal work.";
+    "practiceArea": "Practice area";
+    "recommendedIn": "Recommended in {codes}";
+  };
   "search": {
     "aiRefine": "Improve query with AI";
     "continueInChat": "Continue in chat";
