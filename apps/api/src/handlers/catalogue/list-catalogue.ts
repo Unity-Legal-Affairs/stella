@@ -553,6 +553,7 @@ const buildAuthoredSkillCatalogueEntry = (
   organizationId: SafeId<"organization">,
 ): CatalogueEntryResponse => ({
   kind: "skill",
+  source: "in-tree",
   slug: skill.slug,
   displayName: skill.name,
   description: skill.description,
