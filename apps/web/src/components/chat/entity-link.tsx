@@ -13,9 +13,9 @@ import { openCaseLawDecision } from "@/components/chat/case-law-open";
 import { parseStellaMentionHref } from "@/components/chat/chat-mention-href";
 import { openEntityInInspector } from "@/components/chat/entity-open";
 import { navigateToWorkspaceFolder } from "@/components/chat/folder-navigation";
+import { DocumentIcon } from "@/components/document-icon";
 import { MatterIcon } from "@/components/matter-icon";
 import { detached } from "@/lib/detached";
-import { DocumentIcon } from "@/routes/_protected.workspaces/$workspaceId/-components/document-icon";
 import { entityOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
 
 const DECISION_HASH_PREFIX = "#stella-decision=";
