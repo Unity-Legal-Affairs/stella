@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { installCatalogueEntry } from "@/lib/catalogue-install";
 import { detached } from "@/lib/detached";
-import { catalogueKeys } from "@/routes/_protected.knowledge/-queries/catalogue";
+import { catalogueKeys } from "@/components/catalogue/catalogue-queries";
 
 import type { CatalogueEntry } from "./catalogue-types";
 
