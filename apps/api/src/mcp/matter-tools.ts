@@ -4,7 +4,7 @@ import * as v from "valibot";
 
 import { roles } from "@stll/permissions";
 
-import { entities } from "@/api/db/schema";
+import { entities, LIST_ITEM_TYPES } from "@/api/db/schema";
 import { lookupBusinessRegistryShared } from "@/api/handlers/contacts/business-registries-lookup";
 import { createContactHandler } from "@/api/handlers/contacts/create";
 import { deleteContactHandler } from "@/api/handlers/contacts/delete";
@@ -40,6 +40,8 @@ import {
   brandPersistedContactId,
   brandPersistedEntityId,
   brandPersistedEntityLinkId,
+  brandPersistedLegalListId,
+  brandPersistedLegalListSectionId,
   brandPersistedUserId,
   brandPersistedWorkspaceContactId,
 } from "@/api/lib/safe-id-boundaries";
@@ -394,7 +396,7 @@ export const MATTER_TOOL_DEFINITIONS = [
       "get a single task's fields, assignees, and linked entities. Otherwise " +
       "pass matter_id to list the matter's tasks, optionally filtered by a " +
       "due-date range (date_from/date_to, ISO YYYY-MM-DD) and status. " +
-      "Returns each task's id, name, status, priority, and due date.",
+      "Returns each item's id, name, item type, status, priority, and due date.",
     inputSchema: {
       type: "object",
       properties: {
@@ -432,7 +434,7 @@ export const MATTER_TOOL_DEFINITIONS = [
     description:
       "Create or update a task, and manage its assignees and entity links. " +
       "Omit task_id to create a task (matter_id and name required). Pass " +
-      "task_id to update: set name, status, priority, or due_date (ISO " +
+      "task_id to update: set name, item_type, status, priority, or due_date (ISO " +
       "YYYY-MM-DD, null to clear); add or remove one assignee " +
       "(add_assignee_user_id / remove_assignee_user_id); link the task to " +
       "another entity (link_entity_id) or remove a link (unlink_link_id). " +
@@ -453,6 +455,7 @@ export const MATTER_TOOL_DEFINITIONS = [
         priority: stringProp("Task priority (e.g. none, low, medium, high)", {
           maxLength: 16,
         }),
+        item_type: enumProp("What the List item represents", LIST_ITEM_TYPES),
         due_date: nullableStringProp(
           "Due date (ISO YYYY-MM-DD); pass null to clear",
           { maxLength: 10 },
@@ -1146,6 +1149,7 @@ const readTaskDetail = async ({
           name: true,
           status: true,
           priority: true,
+          listItemType: true,
           dueDate: true,
           startAt: true,
           endAt: true,
@@ -1268,6 +1272,7 @@ const handleListTasksTool: McpToolHandler = async ({ args, context }) => {
       name: taskRow.name,
       status: taskRow.status,
       priority: taskRow.priority,
+      itemType: taskRow.listItemType ?? "task",
       dueDate: taskRow.dueDate,
       startAt: taskRow.startAt?.toISOString() ?? null,
       endAt: taskRow.endAt?.toISOString() ?? null,
@@ -1316,6 +1321,7 @@ const handleListTasksTool: McpToolHandler = async ({ args, context }) => {
         name: entities.name,
         status: entities.status,
         priority: entities.priority,
+        itemType: entities.listItemType,
         dueDate: entities.dueDate,
       })
       .from(entities)
@@ -1345,7 +1351,10 @@ const handleListTasksTool: McpToolHandler = async ({ args, context }) => {
     cursorForItem: (item) => encodePaginationCursor([item.createdAt, item.id]),
   });
 
-  const tasks = page.items.map(({ createdAt: _createdAt, ...task }) => task);
+  const tasks = page.items.map(({ createdAt: _createdAt, ...task }) => ({
+    ...task,
+    itemType: task.itemType ?? "task",
+  }));
 
   const textFields = runTextFieldSpecs(taskListTextFieldSpecs(workspaceId), {
     tasks,
@@ -1367,6 +1376,12 @@ const saveTaskArgsSchema = v.pipe(
     name: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(255))),
     status: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(32))),
     priority: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(16))),
+    item_type: v.optional(v.picklist(LIST_ITEM_TYPES)),
+    list_id: v.optional(v.pipe(v.string(), v.uuid())),
+    list_section_id: v.optional(v.pipe(v.string(), v.uuid())),
+    list_description: v.optional(
+      v.nullable(v.pipe(v.string(), v.maxLength(10_000))),
+    ),
     due_date: v.optional(v.nullable(v.pipe(v.string(), v.regex(ISO_DATE)))),
     add_assignee_user_id: v.optional(v.pipe(v.string(), v.minLength(1))),
     remove_assignee_user_id: v.optional(v.pipe(v.string(), v.minLength(1))),
@@ -1400,13 +1415,19 @@ const saveTaskArgsSchema = v.pipe(
       ["link_entity_id"],
       ["unlink_link_id"],
       ["matter_id"],
+      ["list_id"],
+      ["list_section_id"],
+      ["list_description"],
     ],
     (i) =>
       i.task_id !== undefined ||
       (i.add_assignee_user_id === undefined &&
         i.remove_assignee_user_id === undefined &&
         i.link_entity_id === undefined &&
-        i.unlink_link_id === undefined),
+        i.unlink_link_id === undefined &&
+        i.list_id === undefined &&
+        i.list_section_id === undefined &&
+        i.list_description === undefined),
     "assignee and link changes require task_id (they apply to an existing task)",
   ),
   // An update must request at least one action.
@@ -1416,6 +1437,7 @@ const saveTaskArgsSchema = v.pipe(
       ["name"],
       ["status"],
       ["priority"],
+      ["item_type"],
       ["due_date"],
       ["add_assignee_user_id"],
       ["remove_assignee_user_id"],
@@ -1427,6 +1449,7 @@ const saveTaskArgsSchema = v.pipe(
       i.name !== undefined ||
       i.status !== undefined ||
       i.priority !== undefined ||
+      i.item_type !== undefined ||
       i.due_date !== undefined ||
       i.add_assignee_user_id !== undefined ||
       i.remove_assignee_user_id !== undefined ||
@@ -1640,7 +1663,7 @@ const handleSaveTaskTool: McpToolHandler = async ({ args, context }) => {
       issues: parsed.issues,
       message: crossFieldOrGeneric(
         parsed.issues,
-        "Invalid input: expected { task_id?, matter_id?, name?, status?, priority?, due_date?, add_assignee_user_id?, remove_assignee_user_id?, link_entity_id?, unlink_link_id? }",
+        "Invalid input: expected { task_id?, matter_id?, name?, item_type?, status?, priority?, due_date?, add_assignee_user_id?, remove_assignee_user_id?, link_entity_id?, unlink_link_id? }",
       ),
     });
   }
@@ -1666,9 +1689,25 @@ const handleSaveTaskTool: McpToolHandler = async ({ args, context }) => {
         recordAuditEvent: bindWorkspaceRecorder(context, workspaceId),
         body: {
           name: input.name ?? "",
+          ...(input.item_type === undefined
+            ? {}
+            : { listItemType: input.item_type }),
           ...(input.status === undefined ? {} : { status: input.status }),
           ...(input.priority === undefined ? {} : { priority: input.priority }),
           ...(input.due_date === undefined ? {} : { dueDate: input.due_date }),
+          ...(input.list_id === undefined
+            ? {}
+            : { listId: brandPersistedLegalListId(input.list_id) }),
+          ...(input.list_section_id === undefined
+            ? {}
+            : {
+                listSectionId: brandPersistedLegalListSectionId(
+                  input.list_section_id,
+                ),
+              }),
+          ...(input.list_description === undefined
+            ? {}
+            : { listDescription: input.list_description }),
         },
       }),
     );
@@ -1713,6 +1752,7 @@ const handleSaveTaskTool: McpToolHandler = async ({ args, context }) => {
     input.name !== undefined ||
     input.status !== undefined ||
     input.priority !== undefined ||
+    input.item_type !== undefined ||
     input.due_date !== undefined
   ) {
     const updated = await Result.gen(() =>
@@ -1725,6 +1765,9 @@ const handleSaveTaskTool: McpToolHandler = async ({ args, context }) => {
           ...(input.name === undefined ? {} : { name: input.name }),
           ...(input.status === undefined ? {} : { status: input.status }),
           ...(input.priority === undefined ? {} : { priority: input.priority }),
+          ...(input.item_type === undefined
+            ? {}
+            : { listItemType: input.item_type }),
           ...(input.due_date === undefined ? {} : { dueDate: input.due_date }),
         },
       }),

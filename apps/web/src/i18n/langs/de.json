@@ -864,6 +864,11 @@
     "import": "Importieren",
     "invite": "Einladen",
     "invoices": "Rechnungen",
+    "itemTypeValues": {
+      "event": "Ereignis",
+      "fact": "Tatsache",
+      "requirement": "Anforderung"
+    },
     "kind": "Art",
     "language": "Sprache",
     "languages": {
