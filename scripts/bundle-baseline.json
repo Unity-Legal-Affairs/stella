@@ -8,5 +8,6 @@
   "vendor-graphs": 189345,
   "vendor-react": 56604,
   "vendor-tanstack": 467853,
+  "vendor-tanstack-server-fn": 1533,
   "wasm-vendor": 0
 }
