@@ -70,7 +70,7 @@ export const SuggestedActions = ({
       className={cn(
         "flex max-w-full gap-1.5",
         horizontal
-          ? "[scrollbar-width:none] overflow-x-auto [&::-webkit-scrollbar]:hidden"
+          ? "overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           : "flex-col items-start",
         className,
       )}
