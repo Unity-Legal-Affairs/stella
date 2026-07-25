@@ -24,7 +24,9 @@ const broadcastMock = mock(() => {});
 let fileScanResult: ScanResult = { verdict: "pass", findings: [] };
 const scanFileMock = mock(async () => Result.ok(fileScanResult));
 
+const realS3 = await import("@/api/lib/s3");
 void mock.module("@/api/lib/s3", () => ({
+  ...realS3,
   getS3: () => ({
     write: s3WriteMock,
     delete: s3DeleteMock,
