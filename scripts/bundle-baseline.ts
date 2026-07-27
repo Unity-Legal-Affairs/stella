@@ -96,8 +96,18 @@ const vendorRe = (name: VendorGroup): RegExp =>
 // Returns the group a client JS file belongs to. Everything that is not the
 // entry or a named vendor chunk (route chunks, locale chunks, workers, the big
 // lazy `global-*` chunk, pdf/katex, ...) falls into the catch-all "routes".
-const classifyChunk = (fileName: string): "entry" | VendorGroup | "routes" => {
-  if (ENTRY_RE.test(fileName)) {
+//
+// The name test alone is not enough for the entry: a dependency module whose
+// source file is `index.js` (e.g. a package's wasm-bindgen glue imported by a
+// worker) also emits an `index-<hash>.js` chunk. The real bootstrap is loaded
+// from the HTML shell and never imported by another chunk, so a candidate
+// whose filename appears inside any other chunk is an ordinary lazy module
+// and falls through to the vendor/routes rules.
+const classifyChunk = (
+  fileName: string,
+  referencedNames: ReadonlySet<string>,
+): "entry" | VendorGroup | "routes" => {
+  if (ENTRY_RE.test(fileName) && !referencedNames.has(fileName)) {
     return "entry";
   }
   for (const name of VENDOR_GROUPS) {
@@ -149,13 +159,27 @@ const measure = (assetsDir: string): MeasureResult => {
     };
   }
 
+  // Which chunk filenames are imported by another chunk. Entry candidates
+  // (`index-*`/`rolldown-runtime-*`) that appear here are lazy dependency
+  // modules that merely share the bootstrap's filename shape.
+  const entryCandidates = files.filter((file) => ENTRY_RE.test(file));
+  const referencedNames = new Set<string>();
+  for (const file of files) {
+    const content = readFileSync(path.join(assetsDir, file), "utf-8");
+    for (const candidate of entryCandidates) {
+      if (candidate !== file && content.includes(candidate)) {
+        referencedNames.add(candidate);
+      }
+    }
+  }
+
   const sizes = emptySizes();
   let largestRoute = 0;
 
   for (const file of files) {
     const gz = gzipSize(path.join(assetsDir, file));
     sizes.total += gz;
-    const group = classifyChunk(file);
+    const group = classifyChunk(file, referencedNames);
     if (group === "routes") {
       sizes.routes += gz;
       largestRoute = Math.max(largestRoute, gz);
@@ -375,8 +399,12 @@ const runCheck = (): number => {
 const runSelfTest = (): number => {
   const failures: string[] = [];
 
+  // An entry-shaped chunk imported by another chunk is a lazy dependency
+  // module (e.g. wasm-bindgen glue compiled from a package's index.js), not
+  // the bootstrap; the self-test models that with `referenced`.
+  const referenced = new Set(["index-D1PgnKxZ.js"]);
   const expectClass = (fileName: string, expected: string) => {
-    const actual = classifyChunk(fileName);
+    const actual = classifyChunk(fileName, referenced);
     if (actual !== expected) {
       failures.push(
         `classifyChunk("${fileName}") = ${actual}, want ${expected}`,
@@ -395,6 +423,8 @@ const runSelfTest = (): number => {
   expectClass("index.module-C5goDZ0H.js", "routes");
   expectClass("global-Dd3chVIF.js", "routes");
   expectClass("ar-CkDpEUW9.js", "routes");
+  // Entry-shaped but imported elsewhere: an ordinary lazy module.
+  expectClass("index-D1PgnKxZ.js", "routes");
 
   const expectStatus = (
     label: string,
