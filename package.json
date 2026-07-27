@@ -110,7 +110,7 @@
     "@better-auth/oauth-provider": "1.6.23",
     "@libpdf/core": "0.4.1",
     "@stll/anonymize-data": "0.0.9",
-    "@stll/anonymize-wasm": "2.7.0",
+    "@stll/anonymize-wasm": "2.7.1",
     "@t3-oss/env-core": "0.13.11",
     "@tailwindcss/postcss": "4.3.3",
     "@tailwindcss/vite": "4.3.3",
