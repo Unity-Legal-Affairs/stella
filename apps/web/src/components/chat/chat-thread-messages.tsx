@@ -43,6 +43,7 @@ import type {
   PersistedChatMessage,
 } from "@/components/chat/chat-ui-tools";
 import { isApprovalPart } from "@/components/chat/chat-ui-tools";
+import { MessageExportMenu } from "@/components/chat/message-export-menu";
 import { NeedsMatterCard } from "@/components/chat/needs-matter-card";
 import { rehypeAnonSpans } from "@/components/chat/rehype-anon-spans";
 import { SourceChips } from "@/components/chat/source-chips";
@@ -55,6 +56,7 @@ import type { QueuedChatMessage } from "@/features/chat/hooks/use-chat-session";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { useMaybeStickToBottomContext } from "@/hooks/use-stick-to-bottom";
 import type { TranslationKey } from "@/i18n/types";
+import type { ChatThreadRef } from "@/lib/chat-thread-ref";
 import { dedupeById } from "@/lib/dedupe-by-id";
 import { detached } from "@/lib/detached";
 import {
@@ -87,6 +89,7 @@ export const ChatThreadMessages = ({
   queuedMessages,
   onRemoveQueuedMessage,
   streamdownComponents,
+  threadRef,
   workspaceId,
 }: ChatThreadMessagesProps) => {
   const { activeOrganizationId } = useChatApproval();
@@ -229,6 +232,7 @@ export const ChatThreadMessages = ({
               }
               message={message}
               onResend={onResend}
+              threadRef={threadRef}
             />
           </>
         ) : (
@@ -920,6 +924,7 @@ const AssistantMessageActions = ({
   isLatestAssistantMessage,
   message,
   onResend,
+  threadRef,
 }: {
   isGenerating: boolean;
   isLatestAssistantMessage: boolean;
@@ -927,6 +932,9 @@ const AssistantMessageActions = ({
   onResend?:
     | ((options?: ChatResendOptions) => void | PromiseLike<void>)
     | undefined;
+  /** Present on the main chat surface; enables the export action. Omitted on
+   *  embedded surfaces (file-chat overlay, template studio) that don't export. */
+  threadRef?: ChatThreadRef | undefined;
 }) => {
   const t = useTranslations();
   const text = useMemo(() => getMessageText(message), [message]);
@@ -979,6 +987,9 @@ const AssistantMessageActions = ({
           <RotateCcwIcon className="size-3.5" />
           {t("common.retry")}
         </Button>
+      )}
+      {text && threadRef && (
+        <MessageExportMenu messageId={message.id} threadRef={threadRef} />
       )}
     </div>
   );
@@ -1077,6 +1088,9 @@ type ChatThreadMessagesProps = {
       props: ComponentProps<"button"> & { ph?: string },
     ) => React.ReactNode;
   };
+  /** The thread being rendered. Enables the per-message export action; omitted
+   *  on embedded surfaces that don't offer export. */
+  threadRef?: ChatThreadRef | undefined;
   workspaceId?: string | undefined;
 };
 
