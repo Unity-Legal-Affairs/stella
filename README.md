@@ -15,8 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/stella/stella/releases"><img src="https://img.shields.io/github/v/release/stella/stella?include_prereleases&label=release" alt="Latest release" /></a>
-  <a href="https://github.com/stella/stella/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License" /></a>
+  <a href="https://github.com/Unity-Legal-Affairs/stella/releases"><img src="https://img.shields.io/github/v/release/stella/stella?include_prereleases&label=release" alt="Latest release" /></a>
   <a href="https://stll.app"><img src="https://img.shields.io/badge/cloud-stll.app-black" alt="stella cloud" /></a>
   <a href="https://github.com/stella/stella/issues"><img src="https://img.shields.io/github/issues/stella/stella" alt="Issues" /></a>
   <a href="https://discord.gg/8dZjmVFjTK"><img src="https://img.shields.io/badge/discord-join%20chat-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
@@ -37,7 +36,7 @@ preserving parsers, and ingestion primitives.
 provides typed clients for national company and commercial registries, including
 ARES, Companies House, SEC EDGAR, KRS, PRH, VIES and more.
 
-**Anonymization.** [stella/anonymize](https://github.com/stella/anonymize)
+**Anonymization.** [stella/anonymize](https://github.com/Unity-Legal-Affairs/anonymize)
 provides WASM-backed anonymization tooling for legal AI workflows, with app
 integration through chat and document review.
 
@@ -97,7 +96,7 @@ Railway-specific service configuration is documented in
 ### Run stella locally
 
 ```bash
-git clone https://github.com/stella/stella.git
+git clone https://github.com/Unity-Legal-Affairs/stella.git
 cd stella
 bun run dev
 ```
@@ -151,18 +150,6 @@ more information and our policy on AI-generated contributions.
 
 PRs must pass the linting and testing pipeline. You will be prompted
 to sign the Contributor License Agreement (CLA) by CI.
-
-## Contact
-
-1. Open an issue for questions, feedback or suggestions.
-2. Reach out to us for general queries at [hello@stll.app](mailto:hello@stll.app).
-3. [security@stll.app](mailto:security@stll.app) for security issues
-   (see [Security Policy](SECURITY.md)).
-
-## Licensing
-
-Licensed under the Apache License 2.0. See [LICENSE](LICENSE) for the full
-license text and [NOTICE](NOTICE) for attribution of bundled third-party code.
 
 ## Development
 
