@@ -45,8 +45,13 @@ import {
   useDocxFitZoom,
   useDocxWheelZoom,
 } from "@/components/docx-preview-zoom";
+import { shouldUseDocxBrowserEditor } from "@/components/docx/docx-browser-editor.logic";
+import { DocxLoadingShell } from "@/components/docx/docx-loading-shell";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
+import PdfViewer, { PDFSuspenseFallback } from "@/components/pdf/pdf-viewer";
 import Tooltip from "@/components/tooltip";
 import { TranslateDocumentDialog } from "@/components/translate-document-dialog";
+import { useSyncJustifications } from "@/components/workspaces/hooks/use-sync-justifications";
 import { useExternalSyncEffect, useMountEffect } from "@/hooks/use-effect";
 import { useLatestCallback } from "@/hooks/use-latest-callback";
 import { getAnalytics } from "@/lib/analytics/provider";
@@ -55,6 +60,7 @@ import { TOOLBAR_ROW_HEIGHT } from "@/lib/consts";
 import { detached } from "@/lib/detached";
 import { APIError, toAPIError } from "@/lib/errors/api";
 import { ClientOperationError } from "@/lib/errors/client";
+import { fileOptions } from "@/lib/files/queries";
 import {
   PDFProvider,
   usePDFStore,
@@ -64,24 +70,16 @@ import { getPDFPageIdByNumber } from "@/lib/pdf/utils";
 import { ensureRouteQueryData, prefetchRouteQuery } from "@/lib/react-query";
 import { toSafeId } from "@/lib/safe-id";
 import { composeRefs } from "@/lib/utils";
-import { shouldUseDocxBrowserEditor } from "@/routes/_protected.workspaces/$workspaceId/-components/docx/docx-browser-editor.logic";
-import { DocxLoadingShell } from "@/routes/_protected.workspaces/$workspaceId/-components/docx/docx-loading-shell";
-import { fileOptions } from "@/routes/_protected.workspaces/$workspaceId/-components/files/queries";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
-import PdfViewer, {
-  PDFSuspenseFallback,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/pdf/pdf-viewer";
-import { useSyncJustifications } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-sync-justifications";
-import { docxSuggestionsOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/docx-suggestions";
-import { entityOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
+import { docxSuggestionsOptions } from "@/lib/workspaces/queries/docx-suggestions";
+import { entityOptions } from "@/lib/workspaces/queries/entities";
 import {
   entityVersionsKeys,
   entityVersionsOptions,
   fieldFileOptions,
-} from "@/routes/_protected.workspaces/$workspaceId/-queries/entity-versions";
-import { justificationsOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/workspace";
-import { useWorkspaceStore } from "@/routes/_protected.workspaces/$workspaceId/-store";
-import "@/routes/_protected.workspaces/$workspaceId/-components/peek/peek-docx.css";
+} from "@/lib/workspaces/queries/entity-versions";
+import { justificationsOptions } from "@/lib/workspaces/queries/workspace";
+import { useWorkspaceStore } from "@/lib/workspaces/store";
+import "@/components/pdf/peek/peek-docx.css";
 import { PdfViewerControls } from "@/routes/_protected.workspaces/-components/pdf-viewer-controls";
 
 const ReadOnlyDocxViewer = lazy(async () => {
@@ -95,8 +93,7 @@ const ReadOnlyDocxViewer = lazy(async () => {
 // import below pulled the whole vendor-folio chunk (~490 KB gz)
 // into every page load via the route tree.
 const DocxBrowserEditor = lazy(async () => {
-  const m =
-    await import("@/routes/_protected.workspaces/$workspaceId/-components/docx/docx-browser-editor");
+  const m = await import("@/components/docx/docx-browser-editor");
   return { default: m.DocxBrowserEditor };
 });
 
@@ -131,6 +128,24 @@ export const Route = createFileRoute(
     if (!deps.entity || !deps.field) {
       return;
     }
+
+    // Versions power the inspector and field switching. Start the request at
+    // navigation time alongside the entity read so direct document links do
+    // not add a component-mount waterfall. A fresh entity-version read is
+    // reused through the shared query key and route stale time.
+    detached(
+      prefetchRouteQuery(
+        context.queryClient,
+        entityVersionsOptions({
+          workspaceId: params.workspaceId,
+          entityId: deps.entity,
+        }),
+        (error: unknown) => {
+          getAnalytics().captureError(error);
+        },
+      ),
+      "loader",
+    );
 
     const entity = await ensureRouteQueryData(
       context.queryClient,
@@ -256,7 +271,7 @@ const AnonymizeScrollSync = () => {
 
 const InspectorFieldLifecycle = ({ fieldId }: { fieldId: string }) => {
   useMountEffect(() => () => {
-    const inspectorState = useInspectorStore.getState();
+    const inspectorState = useInspectorTabsStore.getState();
     for (const tab of inspectorState.tabs) {
       if (tab.type !== "pdf" || tab.id !== fieldId) {
         continue;
@@ -293,7 +308,7 @@ const InspectorFileOpenLifecycle = ({
   propertyId,
   workspaceId,
 }: InspectorFileOpenLifecycleProps) => {
-  const openFileForEntity = useInspectorStore((s) => s.openFileForEntity);
+  const openFileForEntity = useInspectorTabsStore((s) => s.openFileForEntity);
   useMountEffect(() => {
     openFileForEntity({
       id: fieldId,
@@ -398,7 +413,7 @@ function RouteComponentInner({
     select: (s) => s.editing ?? false,
   });
   const pageNumber = Route.useSearch({ select: (s) => s.pdfPage ?? 1 });
-  const { data: entity } = useSuspenseQuery(
+  const { data: entity, error: entityError } = useSuspenseQuery(
     entityOptions(workspaceId, entityId),
   );
   const versionDataQuery = useQuery(
@@ -414,6 +429,21 @@ function RouteComponentInner({
   );
   currentFileFieldIdsByPropertyRef.current ??= new Map();
   const navigate = Route.useNavigate();
+
+  useExternalSyncEffect(() => {
+    if (!(APIError.is(entityError) && entityError.status === 404)) {
+      return;
+    }
+
+    detached(
+      navigate({
+        to: "/workspaces/$workspaceId",
+        params: { workspaceId },
+        replace: true,
+      }),
+      "RouteComponentInner.entityDeleted",
+    );
+  }, [entityError, navigate, workspaceId]);
 
   useLayoutEffect(() => {
     if (!justificationId || justificationPage === undefined) {
@@ -491,10 +521,14 @@ function RouteComponentInner({
     activeFileField === undefined &&
     activeVersionFile === null &&
     versionDataQuery.isSuccess;
-  const fieldFileQuery = useQuery({
-    ...fieldFileOptions({ workspaceId, entityId, fieldId }),
-    enabled: needsFieldFileLookup,
-  });
+  const fieldFileQuery = useQuery(
+    fieldFileOptions({
+      workspaceId,
+      entityId,
+      fieldId,
+      enabled: needsFieldFileLookup,
+    }),
+  );
   const resolvedVersionFile =
     activeVersionFile ?? fieldFileQuery.data?.file ?? null;
   const activeFileContent =
@@ -576,7 +610,7 @@ function RouteComponentInner({
       latestFileFieldForProperty.id,
     );
     setActiveFieldId(latestFileFieldForProperty.id);
-    useInspectorStore
+    useInspectorTabsStore
       .getState()
       .replaceFileFieldId(fieldId, latestFileFieldForProperty.id);
     detached(

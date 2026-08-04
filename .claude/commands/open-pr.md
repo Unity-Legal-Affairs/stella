@@ -1,115 +1,118 @@
 # Open PR
 
-Prepare the current worktree branch for a pull request: rebase,
-self-review, quality checks, and open a draft PR.
+Prepare the current change or stack for review without disturbing unrelated
+work.
 
-## Instructions
+## 1. Resolve Scope and Isolation
 
-1. **Verify you are on an isolated feature branch**:
+Inspect the branch, worktree, status, remotes, applicable repository
+instructions, and existing PR before changing history:
 
-   ```bash
-   CURRENT=$(git branch --show-current)
-   if [ "$CURRENT" = "main" ] || [ "$CURRENT" = "master" ]; then
-     echo "Error: /open-pr must not run from the default branch."
-     exit 1
-   fi
-   ```
+```bash
+git branch --show-current
+git status --short
+gh pr list --head "$(git branch --show-current)" --state all \
+  --json number,state,isDraft,headRefName,baseRefName,url
+```
 
-   If on main, abort and ask the user which feature branch to
-   use.
+An empty PR list means no PR exists. Authentication, network, or repository
+errors must remain visible and stop the workflow before history changes or
+publication.
 
-   Check whether the current checkout is safe to use for PR prep:
+Never prepare a PR in a dirty shared checkout. If the checkout is on the
+default branch, detached, has unrelated changes, or spans repositories or
+submodules, move the intended work to a clean worktree with a concise inferred
+branch name. Transfer only owned commits or hunks; do not stash, reset, or
+silently include unrelated files. Ask only when ownership cannot be determined
+safely.
 
-   ```bash
-   git status --short
-   ```
+Follow the repository's rerere policy. Review every replayed conflict
+resolution before continuing.
 
-   If the checkout is the user's shared root checkout, has
-   unrelated local changes, or the work spans multiple repos or
-   submodules, stop and move to clean worktree(s) before rebasing
-   or committing. Create the worktree from the current feature
-   branch and continue the rest of this skill there; do not
-   rewrite history in the dirty root checkout.
+## 2. Bootstrap Before Trusting Failures
 
-2. **Bootstrap the worktree before trusting failures**:
+Confirm the repository toolchain, dependencies, submodules, generated sources,
+and expected environment links exist in the isolated worktree. Run the normal
+setup flow when they do not, then retry the same check. Missing tools or modules
+are not product regressions. Keep setup-only lockfile or generated churn out of
+the PR.
 
-   Before running lint, typecheck, tests, or hooks, verify that
-   the worktree actually has the repo toolchain available
-   (`bun`, workspace dependencies, `turbo`, `oxlint`, project
-   bins, and env links if the repo expects them).
+## 3. Rebase the Correct Layer
 
-   If the worktree is missing the toolchain, run the repo's
-   normal install/setup flow first, then rerun the same command.
-   Do not treat missing-bin or module-resolution failures as
-   product-code regressions. Keep setup-only churn such as
-   accidental lockfile changes out of the PR unless the task
-   explicitly requires them.
+Resolve the actual base branch and repository rather than assuming
+`origin/main`. Check `gh extension list` before invoking the optional
+`github/gh-stack` extension.
+If it is installed and `gh stack view` identifies a stack, use
+`gh stack rebase` and review each layer against its parent. If the extension is
+absent or the branch is not stacked, use ordinary Git; do not install an
+optional extension merely to prepare a normal PR.
 
-3. **Rebase onto remote main**:
+For an existing PR, read its `baseRefName` and base repository with `gh pr
+view`. Match that repository to a configured Git remote, fetch the PR base from
+that remote, and rebase onto the fetched base. If no configured remote matches,
+fetch the base repository URL directly and rebase onto `FETCH_HEAD`; do not add
+or rewrite remotes silently.
 
-   ```bash
-   git fetch origin main
-   git rebase origin/main
-   ```
+For a branch without a PR, prefer its configured upstream remote and that
+remote's default branch. Fall back to `origin` only when no upstream is
+configured, then resolve the remote default through its symbolic `HEAD` or
+repository metadata. Fetch immediately before rebasing.
 
-   If conflicts arise, resolve them. After resolving, continue
-   the rebase. If a conflict is ambiguous, ask the user.
+Resolve deterministic conflicts directly. Ask when competing resolutions
+would change behavior or discard work whose ownership is unclear.
 
-4. **Self-review against CLAUDE.md conventions**:
+## 4. Review the Actual Change
 
-   Get the full diff against main:
+Read applicable instruction files, then inspect the complete semantic diff and
+changed canonical sources. For generated artifacts, review their source in full
+and inspect the generated delta for drift; do not reread large mechanical
+copies.
 
-   ```bash
-   git diff origin/main --name-only
-   ```
+Check for accidental files, invalid states, authorization and disclosure
+boundaries, missing generated/i18n synchronization, migration compatibility,
+performance, replay safety, and tests that cover real failure modes. Fix
+confirmed defects before publishing.
 
-   Read every changed file in full. Review against the
-   conventions in CLAUDE.md (TypeScript strictness, error
-   handling, security, naming, i18n, patterns). Fix any
-   violations directly; don't just list them. Commit fixes
-   separately with `fix: address self-review findings`.
+## 5. Run Proportionate Checks
 
-5. **Run all quality checks**:
+Use the repository's canonical verification command for code changes. Start
+with focused checks while iterating, then run the CI-equivalent command before
+push when the task and machine allow it.
 
-   ```bash
-   bun run lint \
-     && bun run format \
-     && bun run typecheck \
-     && bun run test
-   ```
+For documentation or skill-only changes, run their owning generators and
+validators, formatting verification, and `git diff --check`; do not run
+unrelated application suites as ritual. Let pre-push hooks run their affected
+gates.
 
-   If any check fails, fix the issue and re-run. Commit fixes
-   with `fix: lint/format/type errors`.
+Honor explicit constraints on heavy local checks. Record what was skipped and
+rely on CI rather than silently invoking equivalent work another way.
 
-6. **Security audit**:
+## 6. Apply Security Review by Risk
 
-   Run `/security-audit`. Fix any critical or high findings
-   in files changed in this PR before opening it.
-   Commit fixes with `fix: address security audit findings`.
+Always inspect for secrets, private identifiers, unsafe public wording, and
+local paths. Run the repository security-audit workflow when the change touches
+a security boundary or the user requests it. Fix validated in-scope high-risk
+findings before publication and follow the repository's public-disclosure
+policy.
 
-7. **Open the PR as draft**:
+## 7. Commit and Push Safely
 
-   Push the branch and create the PR as a **draft**:
+Use focused commits that follow repository conventions. Push a new branch
+normally. Use `--force-with-lease`, never plain force, only after intentionally
+rebasing a published branch. For a stack, submit every layer and verify each PR
+targets its parent.
 
-   ```bash
-   git push --force-with-lease -u origin HEAD
-   gh pr create --fill --draft
-   ```
+## 8. Open or Update Review State
 
-   If `--fill` produces a poor title/body, write a proper one
-   following Conventional Commits (`feat:`, `fix:`, etc.) with
-   a very concise summary. Do not add a separate test plan unless
-   the user explicitly asks for one. Do not mention deployment
-   choices or attribute the motivation for the PR to a specific
-   person's feedback, request, or experience.
+- An explicit draft request creates or preserves a draft.
+- An ordinary request to open a complete PR creates it ready for review.
+- Keep a PR draft only when requested or when the change is knowingly
+  incomplete; state the reason.
 
-   This repository is public. Never include marketing language,
-   internal business context, pricing, competitive analysis,
-   user identities, conversation specifics, deployment specifics,
-   or security architecture beyond what the diff obviously shows.
-   Do not add details that would help a motivated attacker exploit
-   the code, especially a vulnerable previous version being fixed.
-   Assume the PR may be read by hostile adversaries, not only
-   friendly collaborators. When sensitive context would improve
-   readability, omit it by default; ask the user only if omission
-   would make the PR hard to review.
+Write a concise title and body describing only the visible implementation.
+Follow repository rules for attribution and public context. Do not add a test
+plan unless requested.
+
+Report the URL, readiness, checks run or skipped, and any blocker. Do not begin
+bot monitoring, merge, or deployment unless the user requested that broader
+workflow.

@@ -11,8 +11,10 @@ import {
   TEXT_MARKDOWN_MIME_TYPE,
   TEXT_PLAIN_MIME_TYPE,
 } from "@/api/handlers/chat/attachment-validation";
-import { createChatAttachmentPart } from "@/api/handlers/chat/chat-message-parts";
-import type { PersistableChatMessage } from "@/api/handlers/chat/types";
+import {
+  createChatAttachmentPart,
+  toPersistableChatMessage,
+} from "@/api/handlers/chat/chat-message-parts";
 import { toSafeId } from "@/api/lib/branded-types";
 import { toDataUrl } from "@/api/lib/data-url";
 import { DatabaseError } from "@/api/lib/errors/tagged-errors";
@@ -20,6 +22,7 @@ import { DOCX_MIME_TYPE, PDF_MIME_TYPE } from "@/api/mime-types";
 import { asTestRaw } from "@/api/tests/helpers/test-tool-set";
 
 const fileBytes = new TextEncoder().encode("Jan Novak,Acme");
+const IMAGE_PNG_MIME_TYPE = "image/png";
 const arrayBufferMock = mock(async () =>
   fileBytes.buffer.slice(
     fileBytes.byteOffset,
@@ -56,7 +59,9 @@ const s3DeleteMock = mock(async () => undefined);
 const workspaceId = toSafeId<"workspace">("workspace_1");
 
 void mock.module("@/api/lib/s3", () => ({
+  deleteS3ObjectWithSignal: s3DeleteMock,
   getS3: () => ({ delete: s3DeleteMock, file: fileMock, write: writeMock }),
+  putS3ObjectWithSignal: writeMock,
 }));
 
 const {
@@ -138,8 +143,38 @@ describe("chat attachment hydration", () => {
       type: "rawOverride",
       part: {
         metadata: { filename: "scan.pdf" },
-        source: { mimeType: PDF_MIME_TYPE },
+        source: {
+          type: "data",
+          value: Buffer.from(fileBytes).toString("base64"),
+          mimeType: PDF_MIME_TYPE,
+        },
         type: "document",
+      },
+    });
+  });
+
+  test("keeps raw image attachments URL-backed for provider adapters", async () => {
+    const result = await hydrateFilePart({
+      fileName: "scan.png",
+      mimeType: IMAGE_PNG_MIME_TYPE,
+      sendMode: CHAT_SEND_MODE.rawOverride,
+      s3Key: "user/file",
+    });
+
+    expect(Result.isOk(result)).toBe(true);
+    if (Result.isError(result)) {
+      throw result.error;
+    }
+    expect(result.value).toMatchObject({
+      type: "rawOverride",
+      part: {
+        metadata: { filename: "scan.png" },
+        source: {
+          type: "url",
+          value: toDataUrl(fileBytes, IMAGE_PNG_MIME_TYPE),
+          mimeType: IMAGE_PNG_MIME_TYPE,
+        },
+        type: "image",
       },
     });
   });
@@ -201,7 +236,7 @@ describe("chat attachment hydration", () => {
     const safeDb: SafeDb = async (callback) =>
       // oxlint-disable-next-line node/callback-return -- arrow body already returns the callback result
       await Result.tryPromise(async () => await callback(testTx));
-    const message: PersistableChatMessage = {
+    const message = toPersistableChatMessage({
       id: toSafeId<"chatMessage">("11111111-1111-4111-8111-111111111111"),
       role: "user",
       parts: [
@@ -219,7 +254,7 @@ describe("chat attachment hydration", () => {
           url: "not-a-data-url",
         }),
       ],
-    };
+    });
 
     const recordAuditEvent = mock(async () => undefined);
     const result = await uploadMessageFiles({

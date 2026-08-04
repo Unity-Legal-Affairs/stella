@@ -366,6 +366,7 @@
     },
     "aiPrompt": "AI sõnumiväli",
     "aiThread": "AI vestlus",
+    "analyzingSources": "Allikate analüüsimine",
     "anonymizedMode": "Anonüümitud AI režiim",
     "anonymizedModeDisabled": "Anonüümitud AI režiim on väljas",
     "anonymizedModeEnabled": "Anonüümitud AI režiim on sees",
@@ -401,6 +402,7 @@
     "attachFile": "Lisa fail",
     "attachedImage": "Manustatud pilt",
     "attachment": "Manus",
+    "audioContent": "Loodud heli",
     "cancelQueuedMessage": "Tühista järjekorras sõnum",
     "caseLawGreeting": "Esita küsimusi selle otsuse kohta — täistekst on siin saadaval.",
     "chatAbout": "Lisa AI vestlusesse",
@@ -447,7 +449,8 @@
       "openInFolio": "Ava redaktoris",
       "pickMatterPrompt": "Valige toimik, kuhu see dokument salvestada.",
       "previewName": "Dokument: {name}",
-      "previewWaiting": "Sisu ootamine…"
+      "previewWaiting": "Sisu ootamine…",
+      "savePendingReview": "Enne dokumendi salvestamist lahendage ülevaatust ootavad AI soovitused."
     },
     "deleteThread": "Kustuta vestlus",
     "editMode": {
@@ -474,6 +477,11 @@
     "greeting": "Millega soovite tegeleda?",
     "greetingSubtitle": "Alustage toimikust, dokumendist või lihtsast küsimusest.",
     "hideThread": "Peida vestlus",
+    "improvePrompt": "Täiusta viipa",
+    "improvePromptDraftChanged": "Mustand muutus, seega täiustust ei rakendatud.",
+    "improvePromptPlainTextOnly": "Viipa saab täiustada ainult lihttekstina.",
+    "improvePromptUnavailableAnonymized": "Anonüümitud režiimis ei saa viipa täiustada.",
+    "improvingPrompt": "Viiba täiustamine…",
     "inDocument": "Dokumendis",
     "jumpToMessage": "Liigu selle sõnumi juurde",
     "landing": {
@@ -494,6 +502,15 @@
         "entities": "Selles toimikus"
       },
       "loadError": "Üksuste laadimine ebaõnnestus"
+    },
+    "modelMode": {
+      "deepThinking": "Süvamõtlemine",
+      "deepThinkingDescription": "Keerukas arutlus ja analüüs",
+      "exactModels": "Konkreetne mudel",
+      "fastDescription": "Kiired igapäevased küsimused",
+      "select": "Vali vastamisrežiim",
+      "standard": "Standardne",
+      "standardDescription": "Parim enamiku ülesannete jaoks"
     },
     "modelSelector": {
       "defaultLabel": "Vaikimisi (vestluse roll)",
@@ -529,6 +546,9 @@
     "renameThread": "Nimeta vestlus ümber",
     "resend": "Saada uuesti",
     "resizeThread": "Muuda vestluse suurust",
+    "richContentLoading": "Interaktiivse sisu laadimine…",
+    "richContentTitle": "Interaktiivne sisu",
+    "richContentUnavailable": "Seda sisu ei saa turvaliselt kuvada.",
     "sendError": "Sõnumi saatmisel tekkis probleem. Kui viga püsib, võta ühendust toega.",
     "sendErrorAnonymizationBlocked": "stella ei saanud üht manust anonüümida, seega midagi ei saadetud. Eemalda fail või saada see sõnum anonüümimiseta.",
     "sendErrorLoopDetected": "AI vastus kordus liiga palju. Proovi uuesti kitsama päringuga.",
@@ -663,6 +683,7 @@
     },
     "unsupportedFileType": "Toetamata failitüüp",
     "uploadFailed": "Faili töötlemine ebaõnnestus",
+    "videoContent": "Loodud video",
     "webSearch": {
       "answer": "Summary from sources",
       "answerDisclaimer": "Koostatud allpool toodud avalike veebitulemuste põhjal. Kontrollige seotud allikatega.",
@@ -701,6 +722,8 @@
     "editClause": "Muuda klauslit",
     "editVariant": "Muuda varianti",
     "export": "Ekspordi",
+    "exportAsCsv": "Ekspordi CSV-vormingus",
+    "exportAsJson": "Ekspordi JSON-vormingus",
     "exportFailed": "Klauslite eksportimine ebaõnnestus",
     "formattingPreviewHint": "Nummerdus ja vormindus on siin eelvaade. Loodud dokument rakendab oma loendivormingu, seega ära sisesta numbreid käsitsi.",
     "importFailed": "Klauslite importimine ebaõnnestus",
@@ -857,9 +880,18 @@
     "enterKey": "↵",
     "error": "Viga",
     "expenses": "Kulud",
+    "export": {
+      "citations": "Viited",
+      "failed": "Sõnumit ei õnnestunud salvestada",
+      "footnotes": "Allmärkused",
+      "formatDocx": "Wordi dokument (<docx>.docx</docx>)",
+      "inline": "Tekstisisene",
+      "title": "Salvesta sõnum"
+    },
     "filter": "Filter",
     "formula": "Valem",
     "goBack": "Mine tagasi",
+    "hideSecretValue": "Peida salajane väärtus",
     "history": "Ajalugu",
     "import": "Impordi",
     "invite": "Kutsu",
@@ -960,6 +992,7 @@
     "showAll": "Näita kõiki",
     "showLess": "Näita vähem",
     "showMore": "Näita rohkem",
+    "showSecretValue": "Kuva salajane väärtus",
     "signOut": "Logi välja",
     "somethingWentWrong": "Midagi läks valesti",
     "sort": "Sorteeri",
@@ -991,7 +1024,6 @@
     "allow": "Luba",
     "completeSetup": "Lõpeta seadistamine",
     "defaultClientName": "Rakendus",
-    "deny": "Keela",
     "description": "{clientName} soovib pääseda ligi teie stella tööruumile",
     "error": "Midagi läks valesti. Palun proovige uuesti.",
     "missingJurisdictions": "Teie stella organisatsioon ei ole veel oma praktika jurisdiktsioone seadistanud. Mõned jurisdiktsioonipõhised tööriistad ei ole saadaval enne, kui seadistamise lõpetate.",
@@ -1203,6 +1235,7 @@
       "aiConfigProviderValidationFailed": "AI-teenusepakkuja lükkas seadistuse tagasi. Kontrollige API-võtit ja mudelit.",
       "deeplKeyRejected": "Salvestatud DeepL-i võti lükati tagasi. Asendage see organisatsiooni seadetes.",
       "deeplQuotaExceeded": "Selle organisatsiooni DeepL-i tähemärgikvoot on ammendatud.",
+      "disposableEmailNotAllowed": "Ajutised e-posti aadressid ei ole lubatud. Kasutage püsivat e-posti aadressi.",
       "forbidden": "Teil pole selleks toiminguks õigust.",
       "internalServerError": "Midagi läks valesti. Proovige uuesti.",
       "legalSourceEntityLimitReached": "See toimik on jõudnud olemite piiranguni, mistõttu dokumenti ei saanud luua.",
@@ -1667,7 +1700,7 @@
       "unavailable": "Viidatud sait ei luba turvalist eelvaadet. Kui tööriist tagastas dokumendi teksti, kuvatakse see siin; muul juhul avage originaal."
     },
     "facet": {
-      "anonymization": "Anonüümistamine",
+      "anonymization": "Anonüümimine",
       "previewInFullViewToast": "Eelvaade on siin põhivaade. Klõpsa minimeerimisnuppu, et näha seda metaandmete kõrval."
     },
     "hidePane": "Peida paneel",
@@ -1711,6 +1744,10 @@
       "description": "Paigalda SKILL.md-paketid, mis lisavad vestlusele erimeetodeid ja kirjutuskaitstud ressursse.",
       "disableSkill": "Keela oskus",
       "disabled": "Keelatud",
+      "discoverSkills": "Otsi oskusi",
+      "discoveredSkills": "{count, plural, one {Leiti # oskus} other {Leiti # oskust}}",
+      "discoveryEmpty": "Sellest hoidlast või kaustast ei leitud ühtegi oskust.",
+      "discoverySkippedInvalid": "{count, plural, one {# vigane oskus jäeti vahele} other {# vigast oskust jäeti vahele}}",
       "dropFile": "Lohista SKILL.md või .zip siia",
       "editSkill": "Muuda oskust",
       "emptyDescription": "Laadi üles SKILL.md-fail, pakitud oskuse kaust või impordi avalik GitHubi oskuse URL.",
@@ -1741,9 +1778,16 @@
       "generateTitle": "Genereeri oskus AI-ga",
       "generating": "Genereerimine…",
       "howItRuns": "How it runs",
-      "importHelp": "Kleebi otsene SKILL.md URL, GitHubi faili URL või GitHubi kausta URL, mis sisaldab faili SKILL.md.",
+      "importFailureFetch": "Oskuse allikat ei saanud laadida.",
+      "importFailureIntegrity": "Oskuse allikas muutus pärast avastamist. Vaata see uuesti üle.",
+      "importFailureLimit": "Oskuste limiit on täis.",
+      "importFailureNameConflict": "Selle nimega oskus on juba olemas.",
+      "importHelp": "Kleebi avaliku GitHubi hoidla, kausta või SKILL.md faili URL. Vaata leitud oskused enne installimist üle.",
+      "importPartial": "{installedCount, plural, one {{installed} imporditud} other {{installed} imporditud}}; {failedCount, plural, one {{failed} nurjus} other {{failed} nurjus}}.",
+      "importSelected": "Impordi valitud ({count})",
       "importSkill": "Impordi URL-ist",
       "importTitle": "Impordi oskus",
+      "importedSkills": "{count, plural, one {Imporditi # oskus} other {Imporditi # oskust}}",
       "invalidPath": "Tee tohib sisaldada ainult väiketähti, numbreid, punkte, sidekriipse või allkriipse",
       "license": "Litsents: {license}",
       "newFile": "Uus fail",
@@ -1757,6 +1801,7 @@
       "scopeTeam": "Kõik meeskonnas",
       "selectFileHint": "Select a file from the list to open it in the editor panel on the right.",
       "selectedFile": "Valitud: {name}",
+      "selectionLimit": "Vali korraga kuni {count} oskust.",
       "sourceUpload": "Üles laaditud",
       "sourceUrl": "Avalik URL",
       "unsavedChanges": "Salvestamata muudatused — kas loobuda?",
@@ -2085,8 +2130,21 @@
     "recents": "Hiljutised",
     "search": "Otsing",
     "shortcutCategories": {
-      "navigation": "Navigeerimine"
+      "help": "Abi",
+      "navigation": "Navigeerimine",
+      "review": "Dokumendi ülevaatus"
     },
+    "shortcutsDialog": {
+      "collision": "Juba määratud: {label}",
+      "description": "Sirvi klaviatuuri otseteid, et kiiremini töötada.",
+      "editShortcut": "Muuda otseteed",
+      "invalidBinding": "Lisage klahv, mis pole muuteklahv",
+      "notRebindable": "Seda otseteed ei saa muuta",
+      "pressKeys": "Vajutage uued klahvid…",
+      "resetToDefault": "Lähtesta vaikeväärtusele",
+      "title": "Klaviatuuri otseteed"
+    },
+    "showShortcuts": "Kuva klaviatuuri otseteed",
     "sidebar": "Külgriba",
     "sidebarDescription": "Kuvab mobiilse külgriba.",
     "templates": "Mallid",
@@ -2309,11 +2367,25 @@
     "settingsDescription": "Muutke oma organisatsiooni nime ja slugi",
     "switchOrganization": "Vaheta organisatsiooni"
   },
+  "routeError": {
+    "backToMatters": "Naase toimikute juurde",
+    "copyReference": "Kopeeri vea viide",
+    "descriptionAdministrator": "Proovi uuesti. Kui probleem püsib, naase oma toimikute juurde või võta alloleva viitega ühendust administraatoriga.",
+    "descriptionNone": "Proovi uuesti. Kui probleem püsib, naase oma toimikute juurde.",
+    "descriptionReport": "Proovi uuesti. Kui probleem püsib, naase oma toimikute juurde või teata sellest alloleva viitega.",
+    "reference": "Vea viide",
+    "reportBody": "Vea viide: {reference}\n\nMis juhtus?\n",
+    "reportProblem": "Teata probleemist",
+    "reportSubject": "stella tõrge {reference}",
+    "title": "Seda lehte ei saanud avada"
+  },
   "search": {
     "aiRefine": "Täpsusta päringut AI-ga",
     "continueInChat": "Jätka vestluses",
     "dateFrom": "Alates",
     "dateTo": "Kuni",
+    "deleteSearchDescription": "See kustutab \"<bdi>{name}</bdi>\" jäädavalt.",
+    "deleteSearchTitle": "Kustuta salvestatud otsing",
     "editedBy": "Muutja",
     "emptyState": "Alustage tippimist, et otsida kõigist asjadest.",
     "escKey": "ESC",
@@ -2330,9 +2402,16 @@
     "mimeType": "Failitüüp",
     "noResults": "Päringule „{query}\" tulemusi ei leitud.",
     "placeholder": "Otsi kõigist asjadest...",
+    "previewUnavailable": "Eelvaade pole saadaval",
     "recentSearches": "Hiljutised otsingud",
     "recentlyOpenedFiles": "Hiljuti avatud failid",
+    "renameSearchTitle": "Nimeta salvestatud otsing ümber",
     "resultCount": "{count, plural, one {# tulemus} other {# tulemust}}",
+    "saveSearch": "Salvesta otsing",
+    "saveSearchNamePlaceholder": "nt Hiljutised PDF-id",
+    "saveSearchTitle": "Salvesta otsing",
+    "savedSearches": "Salvestatud otsingud",
+    "savedSearchesEmpty": "Salvesta otsing, et seda hiljem uuesti kasutada.",
     "summaryAction": "Võta parimad tulemused kokku",
     "summaryError": "Kokkuvõte pole saadaval",
     "summaryLoading": "Tulemuste kokkuvõtmine...",
@@ -2468,7 +2547,7 @@
         "labelPickerEmpty": "Sobivat tüüpi pole.",
         "labelPickerPlaceholder": "Tüüp",
         "termAddedToast": "„{value}“ lisati meeskonna keelduloendisse.",
-        "title": "Anonüümistamine"
+        "title": "Anonüümimine"
       },
       "auditLogs": "Tegevuslogid",
       "auditLogsAction": "Tegevus",
@@ -2496,6 +2575,12 @@
       "auditLogsTo": "Kuni",
       "auditLogsUserId": "Kasutaja ID",
       "auditLogsUserIdPlaceholder": "Filtreeri kasutaja ID järgi",
+      "documentProcessing": {
+        "description": "Tuvastage skannitud PDF-ides tekst automaatselt, et nende sisu oleks otsitav.",
+        "title": "Dokumenditeksti tuvastamine",
+        "toggleLabel": "Tuvasta skannitud PDF-ides tekst automaatselt",
+        "updated": "Dokumenditeksti tuvastamise seadistus uuendatud"
+      },
       "documentTypes": {
         "addPlaceholder": "Add a document type (e.g. Employment Agreement)",
         "deleteFailed": "Couldn't delete document type",
@@ -3079,6 +3164,7 @@
       "copyOption": "Kopeeri (säilita originaal)",
       "description": "Kopeeri või teisalda \"{name}\" teise toimikusse",
       "descriptionCount": "Kopeeri või teisalda {count, plural, one {# üksus} other {# üksust}} teise toimikusse",
+      "goToMatter": "Mine toimikusse",
       "menuItem": "Kopeeri/Teisalda toimikusse",
       "moveButton": "Teisalda",
       "moveOption": "Teisalda (kustuta originaal)",
@@ -3165,12 +3251,18 @@
         "updateRequiredTitle": "Värskendage stella desktop"
       },
       "downloadAsZip": "Laadi alla .zip-fail",
+      "downloadExtractedText": "Eraldatud tekst (.txt)",
       "downloadOriginal": "Algfail",
       "downloadPdf": "PDF",
+      "downloadSearchablePdf": "Otsitav PDF",
       "maxEntitiesReached": "Kirjete piirarv on täis",
+      "ocrAlreadyProcessed": "Tekstituvastus on juba lõpetatud",
+      "ocrQueueFailed": "Tekstituvastust ei õnnestunud järjekorda lisada",
+      "ocrQueued": "Tekstituvastus lisati järgmisse OCR-i paketti",
       "rateLimited": "Kiiruspiirang; jätkatakse {seconds, number} s pärast",
       "renamedToAvoidConflicts": "{count, plural, one {# fail nimetati konfliktide vältimiseks ümber} other {# faili nimetati konfliktide vältimiseks ümber}}",
       "retryFailed": "Proovi uuesti {count, plural, one {# faili} other {# faili}}",
+      "runOcr": "Lisa OCR järjekorda",
       "uploadedPartially": "{failed, plural, one {# faili} other {# faili}} üleslaadimine ebaõnnestus {total, number}-st",
       "uploadedSuccessfully": "Failid edukalt üles laaditud",
       "uploading": "Failide üleslaadimine",
@@ -3335,6 +3427,92 @@
       "equals": "Võrdub"
     },
     "overview": {
+      "activity": {
+        "actorActions": {
+          "added": "Lisas",
+          "cancelled": "Tühistas",
+          "created": "Lõi",
+          "deleted": "Kustutas",
+          "executed": "Käivitas",
+          "removed": "Eemaldas",
+          "reviewed": "Vaatas üle",
+          "updated": "Uuendas"
+        },
+        "approvals": {
+          "approved": "Kinnitus antud",
+          "notRequired": "Pole nõutav",
+          "pending": "Kinnitus ootel",
+          "rejected": "Kinnitus tagasi lükatud"
+        },
+        "automatedService": "Automaatne teenus",
+        "deletedUser": "Kustutatud kasutaja",
+        "details": {
+          "actor": "Täitja",
+          "approval": "Kinnitus",
+          "approvedBy": "Kinnitaja",
+          "channel": "Kanal",
+          "dateTime": "Kuupäev ja kellaaeg",
+          "direct": "Otsene tegevus",
+          "eventId": "Sündmuse ID",
+          "notAvailable": "Pole saadaval",
+          "openTarget": "Ava üksus",
+          "runId": "Käivituse ID",
+          "system": "Süsteemi tegevus",
+          "target": "Siht",
+          "title": "Tegevuse üksikasjad",
+          "trigger": "Algataja",
+          "webhook": "Veebihaak"
+        },
+        "empty": "Selles toimikus pole veel tegevust.",
+        "filterLabel": "Filtreeri tegevust",
+        "filters": {
+          "all": "Kogu tegevus",
+          "automation": "Automatiseerimine",
+          "court": "Kohus",
+          "documents": "Dokumendid",
+          "matter": "Toimik",
+          "tasks": "Päevakord",
+          "team": "Meeskond"
+        },
+        "list": {
+          "actor": "Täitja",
+          "dateTime": "Kuupäev ja kellaaeg",
+          "event": "Sündmus",
+          "provenance": "Päritolu"
+        },
+        "loadEarlier": "Laadi varasemad",
+        "loading": "Laadimine…",
+        "provenance": {
+          "connected": "Ühendatud juurdepääsuga",
+          "connectedBy": "Ühendas {user}",
+          "delegated": "Delegeeris teine agent",
+          "delegatedBy": "Agent delegeeris kasutaja {user} nimel",
+          "dispatched": "Käivitas kasutaja",
+          "dispatchedBy": "{user} käivitas",
+          "dispatchedInChatBy": "{user} käivitas vestluses",
+          "scheduled": "Käivitati ajakava järgi",
+          "scheduledBy": "Kasutaja {user} ajastatud automatiseerimine"
+        },
+        "runCount": "{count, plural, one {# tegevus} other {# tegevust}}",
+        "sources": {
+          "chat": "Vestlus",
+          "flow": "Töövoog",
+          "mcp": "Ühendatud tööriist"
+        },
+        "targets": {
+          "automation": "automatiseerimine",
+          "court": "kohtukirje",
+          "document": "dokument",
+          "matter": "toimik",
+          "task": "päevakorrapunkt",
+          "team": "toimiku meeskond"
+        },
+        "title": "Tegevus",
+        "views": {
+          "list": "Loendivaade",
+          "timeline": "Ajajoone vaade"
+        }
+      },
       "atAGlance": "Ülevaade",
       "edited": "muutis",
       "getStarted": "Alustage dokumentide üleslaadimisega või looge oma esimene kaust.",
@@ -3592,7 +3770,7 @@
       "exportXlsx": "Ekspordi XLSX",
       "fields": "Väljad:",
       "fieldsSelected": "{count, plural, one {# valitud} other {# valitud}}",
-      "filter": "Filter",
+      "filter": "Filtreeri",
       "filterByPlaceholder": "Filter by…",
       "filtersWithCount": "{count, plural, one {# filter} other {# filters}}",
       "groupBy": "Rühmita:",

@@ -3,7 +3,6 @@ import { useState } from "react";
 import {
   DownloadIcon,
   PlusIcon,
-  SearchIcon,
   TextQuoteIcon,
   UploadIcon,
 } from "lucide-react";
@@ -11,11 +10,13 @@ import { useDebouncedCallback } from "use-debounce";
 import { useTranslations } from "use-intl";
 
 import { Button } from "@stll/ui/components/button";
+import { InputGroup, InputGroupInput } from "@stll/ui/components/input-group";
 import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from "@stll/ui/components/input-group";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@stll/ui/components/menu";
 import { stellaToast } from "@stll/ui/components/toast";
 
 import {
@@ -105,9 +106,9 @@ export const ClauseList = ({
     debouncedSearch(e.target.value);
   };
 
-  const handleExport = async () => {
+  const handleExport = async (format: "json" | "csv") => {
     const response = await api.clauses.export.get({
-      query: {},
+      query: { format },
     });
 
     if (response.error) {
@@ -123,17 +124,23 @@ export const ClauseList = ({
     }
 
     const { data } = response;
+    const fileName =
+      format === "csv" ? "clauses-export.csv" : "clauses-export.json";
     if (data instanceof Response) {
       const blob = await data.blob();
-      downloadFile(blob, "clauses-export.json");
+      downloadFile(blob, fileName);
       return;
     }
 
-    // Eden may return parsed JSON; wrap in Blob
-    const blob = new Blob([JSON.stringify(data, null, 2)], {
-      type: "application/json",
-    });
-    downloadFile(blob, "clauses-export.json");
+    // Eden may return parsed JSON/CSV text; wrap in Blob
+    const blob =
+      format === "csv"
+        ? new Blob([String(data)], { type: "text/csv" })
+        : new Blob([JSON.stringify(data, null, 2)], {
+            type: "application/json",
+          });
+
+    downloadFile(blob, fileName);
   };
 
   return (
@@ -162,9 +169,6 @@ export const ClauseList = ({
                   type="search"
                   value={searchInput}
                 />
-                <InputGroupAddon>
-                  <SearchIcon />
-                </InputGroupAddon>
               </InputGroup>
             </ResponsiveActionToolbarItem>
             <ResponsiveActionToolbarItem
@@ -186,20 +190,39 @@ export const ClauseList = ({
                     </span>
                   </Button>
                 )}
-                <Button
-                  aria-label={t("clauses.export")}
-                  onClick={() => {
-                    detached(handleExport(), "ClauseList");
-                  }}
-                  size="sm"
-                  title={t("clauses.export")}
-                  variant="outline"
-                >
-                  <DownloadIcon />
-                  <span className="hidden sm:inline">
-                    {t("clauses.export")}
-                  </span>
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    render={
+                      <Button
+                        aria-label={t("clauses.export")}
+                        size="sm"
+                        title={t("clauses.export")}
+                        variant="outline"
+                      >
+                        <DownloadIcon />
+                        <span className="hidden sm:inline">
+                          {t("clauses.export")}
+                        </span>
+                      </Button>
+                    }
+                  />
+                  <DropdownMenuContent>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        detached(handleExport("json"), "ClauseList");
+                      }}
+                    >
+                      {t("clauses.exportAsJson")}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        detached(handleExport("csv"), "ClauseList");
+                      }}
+                    >
+                      {t("clauses.exportAsCsv")}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
                 {canCreateClause && (
                   <Button
                     aria-label={t("clauses.createClause")}

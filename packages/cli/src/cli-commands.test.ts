@@ -9,6 +9,8 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { EXIT_CODES } from "./mcp-constants.js";
+
 const CLI_ENTRYPOINT = path.join(import.meta.dirname, "cli.ts");
 
 const base64url = (value: object): string =>
@@ -889,6 +891,19 @@ describe("help surfaces --input for inputOnly tools", () => {
     expect(result.stdout).toContain("fields");
   });
 
+  test("template save-filled help uses the selected destination in its example", async () => {
+    const server = startMockServer(() => ({ toolPayload: {} }));
+    const result = await runCli({
+      args: ["template", "save-filled", "new-version", "--help"],
+      url: server.url,
+      token: makeToken(["documents_write"]),
+    });
+    server.stop();
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('"action":"create_version"');
+    expect(result.stdout).not.toContain('"action":"create_document"');
+  });
+
   test("clause save --help documents both --input-only fields", async () => {
     const server = startMockServer(() => ({ toolPayload: {} }));
     const result = await runCli({
@@ -1004,6 +1019,78 @@ describe("template fill strictness policies", () => {
   });
 });
 
+describe("template persistence discriminator split", () => {
+  test("requires template consent as well as document-write consent", async () => {
+    const server = startMockServer(() => ({
+      toolPayload: { entityId: "entity_1", versionNumber: 2 },
+    }));
+    const result = await runCli({
+      args: [
+        "template",
+        "save-filled",
+        "new-version",
+        "--template-id",
+        "template_1",
+        "--matter-id",
+        "matter_1",
+        "--entity-id",
+        "entity_1",
+        "--idempotency-key",
+        "retry_1",
+        "--input",
+        '{"values":{"tenant.name":"ACME"}}',
+      ],
+      url: server.url,
+      token: makeToken(["documents_write"]),
+    });
+    server.stop();
+
+    expect(result.exitCode).toBe(EXIT_CODES.auth);
+    expect(result.stderr).toContain("Missing scope stella:templates");
+    expect(result.stderr).toContain(
+      "stella auth login --scopes stella:documents_write,stella:templates",
+    );
+    expect(server.requests).toHaveLength(0);
+  });
+
+  test("new-version injects the destination and forwards values through --input", async () => {
+    const server = startMockServer(() => ({
+      toolPayload: { entityId: "entity_1", versionNumber: 2 },
+    }));
+    const result = await runCli({
+      args: [
+        "template",
+        "save-filled",
+        "new-version",
+        "--template-id",
+        "template_1",
+        "--matter-id",
+        "matter_1",
+        "--entity-id",
+        "entity_1",
+        "--idempotency-key",
+        "retry_1",
+        "--input",
+        '{"values":{"tenant.name":"ACME"}}',
+      ],
+      url: server.url,
+      token: makeToken(["documents_write", "templates"]),
+    });
+    server.stop();
+
+    expect(result.exitCode).toBe(0);
+    expect(server.requests.at(0)?.params.name).toBe("save_filled_template");
+    expect(server.requests.at(0)?.params.arguments).toEqual({
+      action: "create_version",
+      template_id: "template_1",
+      matter_id: "matter_1",
+      entity_id: "entity_1",
+      idempotency_key: "retry_1",
+      values: { "tenant.name": "ACME" },
+    });
+  });
+});
+
 describe("organization discriminator split (S2/Phase 4)", () => {
   test("add-member injects action and forwards the flag args", async () => {
     const server = startMockServer(() => ({ toolPayload: { ok: true } }));
@@ -1060,6 +1147,26 @@ describe("organization discriminator split (S2/Phase 4)", () => {
     expect(server.requests.at(0)?.params.arguments).toEqual({
       action: "update_org_settings",
       matter_number_padding: 4,
+    });
+  });
+
+  test("update-settings forwards the document processing mode", async () => {
+    const server = startMockServer(() => ({ toolPayload: { ok: true } }));
+    const result = await runCli({
+      args: [
+        "organization",
+        "update-settings",
+        "--document-processing-mode",
+        "searchable-text",
+      ],
+      url: server.url,
+      token: makeToken(["admin_write"]),
+    });
+    server.stop();
+    expect(result.exitCode).toBe(0);
+    expect(server.requests.at(0)?.params.arguments).toEqual({
+      action: "update_org_settings",
+      document_processing_mode: "searchable-text",
     });
   });
 });

@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { useHotkey } from "@tanstack/react-hotkeys";
-import type { QueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import {
   createFileRoute,
   Navigate,
@@ -9,9 +9,13 @@ import {
   redirect,
   useMatch,
 } from "@tanstack/react-router";
+import { useDebouncedCallback } from "use-debounce";
 
 import { stellaToast } from "@stll/ui/components/toast";
 
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
+import { WorkflowServiceTierPromptProvider } from "@/components/workspaces/workflow-service-tier-prompt";
+import { WorkflowStartConfirmationPromptProvider } from "@/components/workspaces/workflow-start-confirmation-prompt";
 import { useWorkspaceChatMentionRegistration } from "@/features/chat/hooks/use-workspace-chat-mention-registration";
 import { useMountEffect } from "@/hooks/use-effect";
 import { getTranslator } from "@/i18n/i18n-store";
@@ -19,26 +23,24 @@ import { getAnalytics } from "@/lib/analytics/provider";
 import { api } from "@/lib/api";
 import { detached } from "@/lib/detached";
 import { APIError, toAPIError } from "@/lib/errors/api";
-import { HOTKEYS } from "@/lib/hotkeys";
 import { pageTitle, pageTitleLiteral } from "@/lib/page-title";
 import { ensureRouteQueryData, prefetchRouteQuery } from "@/lib/react-query";
 import { useWorkspaceSSE } from "@/lib/sse";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
+import { useEffectiveHotkey } from "@/lib/use-effective-shortcuts";
+import { overviewOptions, workspaceOptions } from "@/lib/workspaces/queries";
+import { workspacesKeys } from "@/lib/workspaces/queries.logic";
+import { propertiesOptions } from "@/lib/workspaces/queries/properties";
+import { viewsOptions } from "@/lib/workspaces/queries/views";
+import { workflowOptions } from "@/lib/workspaces/queries/workspace";
+import { useWorkspaceStore } from "@/lib/workspaces/store";
 import { ReportExportTracker } from "@/routes/_protected.workspaces/$workspaceId/-components/view/report-export-tracker";
-import { WorkflowServiceTierPromptProvider } from "@/routes/_protected.workspaces/$workspaceId/-components/workflow-service-tier-prompt";
-import { WorkflowStartConfirmationPromptProvider } from "@/routes/_protected.workspaces/$workspaceId/-components/workflow-start-confirmation-prompt";
 import { WorkspaceDropZone } from "@/routes/_protected.workspaces/$workspaceId/-components/workspace-drop-zone";
-import { propertiesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
-import { viewsOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/views";
-import { workflowOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/workspace";
-import { useWorkspaceStore } from "@/routes/_protected.workspaces/$workspaceId/-store";
-import {
-  overviewOptions,
-  workspaceOptions,
-} from "@/routes/_protected.workspaces/-queries";
 
 const EXTRACTION_PREVIEW_EVENT_TYPE = "workflow-extraction-preview";
+const INVALIDATE_QUERY_EVENT_TYPE = "invalidate-query";
 const EXTRACTION_PREVIEW_CLIENT_TTL_MS = 5 * 60 * 1000;
+const ACTIVITY_INVALIDATION_DEBOUNCE_MS = 1000;
+const ACTIVITY_INVALIDATION_MAX_WAIT_MS = 5000;
 
 type ExtractionPreviewEventData = {
   entityId: string;
@@ -175,11 +177,24 @@ function RouteComponent() {
   const workspaceId = Route.useParams({
     select: (p) => p.workspaceId,
   });
+  const queryClient = useQueryClient();
   // Lazy state singleton (mutated in place, identity stable): avoids both
   // the render-scope ref write (React Compiler bailout) and per-render
   // allocation.
   const [previewClearTimers] = useState(
     () => new Map<string, ReturnType<typeof setTimeout>>(),
+  );
+  const invalidateActivity = useDebouncedCallback(
+    (workspaceIdToInvalidate: string) => {
+      detached(
+        queryClient.invalidateQueries({
+          queryKey: workspacesKeys.overviewActivityAll(workspaceIdToInvalidate),
+        }),
+        "handleWorkspaceActivityInvalidation",
+      );
+    },
+    ACTIVITY_INVALIDATION_DEBOUNCE_MS,
+    { maxWait: ACTIVITY_INVALIDATION_MAX_WAIT_MS },
   );
 
   const handleWorkspaceSSEEvent = ({
@@ -189,6 +204,10 @@ function RouteComponent() {
     type: string;
     data: unknown;
   }) => {
+    if (type === INVALIDATE_QUERY_EVENT_TYPE) {
+      invalidateActivity(workspaceId);
+    }
+
     const workspaceStore = useWorkspaceStore.getState();
     if (
       type !== EXTRACTION_PREVIEW_EVENT_TYPE ||
@@ -250,31 +269,26 @@ function RouteComponent() {
     from: "/_protected/workspaces/$workspaceId/invoices",
     shouldThrow: false,
   });
-  const entityDetailMatch = useMatch({
-    from: "/_protected/workspaces/$workspaceId/entities/$entityId",
-    shouldThrow: false,
-  });
-
   // Always-new-chat shortcut. `Mod+J` (defined in `_protected.tsx`)
   // is a smart toggle — it creates a chat only if no inspector
   // tabs exist, otherwise it minimises/restores the pane.
   // `Mod+Shift+J` here always spawns a fresh chat tab, so a user
   // can start a new conversation without first dismissing whatever
   // is currently open.
-  const openChat = useInspectorStore((s) => s.openChat);
+  const openChat = useInspectorTabsStore((s) => s.openChat);
   const handleOpenChat = () => {
     openChat({ workspaceId, contextMatterIds: [workspaceId] });
   };
-  useHotkey(HOTKEYS.NEW_CHAT, handleOpenChat);
+  useHotkey(useEffectiveHotkey("newChat"), handleOpenChat);
 
   // The right-side inspector pane (file viewers + chat tabs) is
   // mounted at the protected layout level (`_protected.tsx`) so
   // its mount survives matter→matter switches without flinching.
-  // Timesheets, invoices, and entity detail bypass the
+  // Timesheets and invoices bypass the
   // WorkspaceDropZone (they have their own layouts), but the inspector
   // pane is still available everywhere inside a workspace.
   const content =
-    timesheetsMatch || invoicesMatch || entityDetailMatch ? (
+    timesheetsMatch || invoicesMatch ? (
       <Outlet />
     ) : (
       <WorkspaceDropZone workspaceId={workspaceId}>
@@ -285,6 +299,7 @@ function RouteComponent() {
   return (
     <WorkflowStartConfirmationPromptProvider>
       <WorkspaceLifecycleCleanup
+        flushActivityInvalidation={invalidateActivity.flush}
         key={workspaceId}
         previewClearTimers={previewClearTimers}
       />
@@ -297,11 +312,14 @@ function RouteComponent() {
 }
 
 const WorkspaceLifecycleCleanup = ({
+  flushActivityInvalidation,
   previewClearTimers,
 }: {
+  flushActivityInvalidation: () => void;
   previewClearTimers: Map<string, ReturnType<typeof setTimeout>>;
 }) => {
   useMountEffect(() => () => {
+    flushActivityInvalidation();
     for (const timer of previewClearTimers.values()) {
       clearTimeout(timer);
     }

@@ -6,11 +6,10 @@ import {
   integer,
   pgTable,
   text,
-  timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 
-import { jsonb } from "@/api/db/columns";
+import { jsonb, timestamptz } from "@/api/db/columns";
 import {
   authMemberPolicies,
   authOrganizationPolicies,
@@ -29,10 +28,19 @@ export const user = pgTable(
     timezoneId: text("timezone_id").default("UTC").notNull(),
     preferredName: text("preferred_name"),
     wordEditShortcut: text("word_edit_shortcut"),
+    // Per-user keyboard-shortcut rebindings, serialized as a JSON object of
+    // `{ [shortcutId]: "Mod+K" }`. Null when the user has never rebound a
+    // shortcut (the default registry then applies unchanged). Structurally
+    // validated and length-capped before persistence (see `user-shortcuts.ts`).
+    userShortcuts: text("user_shortcuts"),
+    // ISO 3166-1 alpha-2 code captured from the edge at signup; seeds the
+    // practice-jurisdiction suggestion in onboarding. Null when the edge
+    // did not advertise a country (local dev, self-hosted without a proxy).
+    detectedCountry: text("detected_country"),
     twoFactorEnabled: boolean("two_factor_enabled").default(false).notNull(),
-    deletedAt: timestamp("deleted_at"),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    updatedAt: timestamp("updated_at")
+    deletedAt: timestamptz("deleted_at"),
+    createdAt: timestamptz("created_at").defaultNow().notNull(),
+    updatedAt: timestamptz("updated_at")
       .defaultNow()
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
@@ -65,6 +73,8 @@ export const AUTH_USER_STELLA_SELECT_COLUMNS = {
   timezoneId: "timezone_id",
   preferredName: "preferred_name",
   wordEditShortcut: "word_edit_shortcut",
+  userShortcuts: "user_shortcuts",
+  detectedCountry: "detected_country",
   twoFactorEnabled: "two_factor_enabled",
   deletedAt: "deleted_at",
   createdAt: "created_at",
@@ -79,10 +89,10 @@ export const session = pgTable(
   "session",
   {
     id: text("id").primaryKey(),
-    expiresAt: timestamp("expires_at").notNull(),
+    expiresAt: timestamptz("expires_at").notNull(),
     token: text("token").notNull().unique(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    updatedAt: timestamp("updated_at")
+    createdAt: timestamptz("created_at").defaultNow().notNull(),
+    updatedAt: timestamptz("updated_at")
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
     ipAddress: text("ip_address"),
@@ -113,12 +123,12 @@ export const account = pgTable(
     accessToken: text("access_token"),
     refreshToken: text("refresh_token"),
     idToken: text("id_token"),
-    accessTokenExpiresAt: timestamp("access_token_expires_at"),
-    refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
+    accessTokenExpiresAt: timestamptz("access_token_expires_at"),
+    refreshTokenExpiresAt: timestamptz("refresh_token_expires_at"),
     scope: text("scope"),
     password: text("password"),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    updatedAt: timestamp("updated_at")
+    createdAt: timestamptz("created_at").defaultNow().notNull(),
+    updatedAt: timestamptz("updated_at")
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
   },
@@ -137,9 +147,9 @@ export const verification = pgTable(
     id: text("id").primaryKey(),
     identifier: text("identifier").notNull(),
     value: text("value").notNull(),
-    expiresAt: timestamp("expires_at").notNull(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    updatedAt: timestamp("updated_at")
+    expiresAt: timestamptz("expires_at").notNull(),
+    createdAt: timestamptz("created_at").defaultNow().notNull(),
+    updatedAt: timestamptz("updated_at")
       .defaultNow()
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
@@ -173,7 +183,7 @@ export const twoFactor = pgTable(
     failedVerificationCount: integer("failed_verification_count")
       .default(0)
       .notNull(),
-    lockedUntil: timestamp("locked_until"),
+    lockedUntil: timestamptz("locked_until"),
   },
   (table) => [
     // UNIQUE, not a plain index: Better Auth's `/two-factor/enable` does a
@@ -195,7 +205,7 @@ export const organization = pgTable(
     name: text("name").notNull(),
     slug: text("slug").notNull().unique(),
     logo: text("logo"),
-    createdAt: timestamp("created_at").notNull(),
+    createdAt: timestamptz("created_at").notNull(),
     metadata: text("metadata"),
   },
   (table) => [
@@ -216,7 +226,7 @@ export const member = pgTable(
       .references(() => user.id, { onDelete: "cascade" }),
     role: text("role").default("member").notNull(),
     lastActiveWorkspaceId: text("last_active_workspace_id"),
-    createdAt: timestamp("created_at").notNull(),
+    createdAt: timestamptz("created_at").notNull(),
   },
   (table) => [
     index("member_organizationId_idx").on(table.organizationId),
@@ -236,8 +246,8 @@ export const invitation = pgTable(
     email: text("email").notNull(),
     role: text("role"),
     status: text("status").default("pending").notNull(),
-    expiresAt: timestamp("expires_at").notNull(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
+    expiresAt: timestamptz("expires_at").notNull(),
+    createdAt: timestamptz("created_at").defaultNow().notNull(),
     inviterId: text("inviter_id")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
@@ -257,8 +267,8 @@ export const jwks = pgTable(
     crv: text("crv"),
     publicKey: text("public_key").notNull(),
     privateKey: text("private_key").notNull(),
-    createdAt: timestamp("created_at").notNull(),
-    expiresAt: timestamp("expires_at"),
+    createdAt: timestamptz("created_at").notNull(),
+    expiresAt: timestamptz("expires_at"),
   },
   () => [...denyStellaAccessPolicies()],
 );
@@ -296,17 +306,17 @@ export const apikey = pgTable(
       .references(() => user.id, { onDelete: "cascade" }),
     refillInterval: integer("refill_interval"),
     refillAmount: integer("refill_amount"),
-    lastRefillAt: timestamp("last_refill_at"),
+    lastRefillAt: timestamptz("last_refill_at"),
     enabled: boolean("enabled").default(true).notNull(),
     rateLimitEnabled: boolean("rate_limit_enabled").default(true).notNull(),
     rateLimitTimeWindow: integer("rate_limit_time_window"),
     rateLimitMax: integer("rate_limit_max"),
     requestCount: integer("request_count").default(0).notNull(),
     remaining: integer("remaining"),
-    lastRequest: timestamp("last_request"),
-    expiresAt: timestamp("expires_at"),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    lastRequest: timestamptz("last_request"),
+    expiresAt: timestamptz("expires_at"),
+    createdAt: timestamptz("created_at").defaultNow().notNull(),
+    updatedAt: timestamptz("updated_at").defaultNow().notNull(),
     permissions: text("permissions"),
     metadata: text("metadata"),
   },
@@ -351,8 +361,8 @@ export const oauthClient = pgTable(
     userId: text("user_id").references(() => user.id, {
       onDelete: "cascade",
     }),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    updatedAt: timestamp("updated_at")
+    createdAt: timestamptz("created_at").defaultNow().notNull(),
+    updatedAt: timestamptz("updated_at")
       .defaultNow()
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
@@ -403,10 +413,10 @@ export const oauthRefreshToken = pgTable(
         onDelete: "cascade",
       }),
     referenceId: text("reference_id"),
-    expiresAt: timestamp("expires_at").notNull(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    revoked: timestamp("revoked"),
-    authTime: timestamp("auth_time"),
+    expiresAt: timestamptz("expires_at").notNull(),
+    createdAt: timestamptz("created_at").defaultNow().notNull(),
+    revoked: timestamptz("revoked"),
+    authTime: timestamptz("auth_time"),
     scopes: text("scopes").array().notNull(),
   },
   (table) => [
@@ -438,8 +448,8 @@ export const oauthAccessToken = pgTable(
     refreshId: text("refresh_id").references(() => oauthRefreshToken.id, {
       onDelete: "set null",
     }),
-    expiresAt: timestamp("expires_at").notNull(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
+    expiresAt: timestamptz("expires_at").notNull(),
+    createdAt: timestamptz("created_at").defaultNow().notNull(),
     scopes: text("scopes").array().notNull(),
   },
   (table) => [
@@ -466,8 +476,8 @@ export const oauthConsent = pgTable(
     }),
     referenceId: text("reference_id"),
     scopes: text("scopes").array().notNull(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    updatedAt: timestamp("updated_at")
+    createdAt: timestamptz("created_at").defaultNow().notNull(),
+    updatedAt: timestamptz("updated_at")
       .defaultNow()
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),

@@ -19,14 +19,16 @@ RUN mkdir -p /json && \
 # Prune the monorepo for the API
 FROM base AS pruner
 # Keep in sync with the turbo version in the root package.json.
-RUN bun install -g turbo@2.10.5
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install -g turbo@2.10.7
 COPY . .
 RUN turbo prune @stll/api @stll/legal-atlas-runner --docker
 
 # Install dependencies using only package manifests (cached layer)
 FROM base AS deps
 COPY --from=install-inputs /json/ .
-RUN bun install --filter @stll/api --filter @stll/legal-atlas-runner --frozen-lockfile --ignore-scripts --network-concurrency=8
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --filter @stll/api --filter @stll/legal-atlas-runner --frozen-lockfile --ignore-scripts --network-concurrency=8
 
 # Copy source code and compile the API to a Bun binary.
 #
@@ -55,6 +57,20 @@ RUN bun build \
     --target bun \
     --outfile /app/backfill.js \
     apps/api/src/scripts/backfill-case-law-slugs.ts
+# Dedicated durable document-processing worker. Deploy the same image with
+# command override ["bun", "/app/document-processing-worker.js"]; PaddleOCR
+# itself remains an isolated serving endpoint configured by OCR_SERVICE_URL.
+RUN bun build \
+    --target bun \
+    --outfile /app/document-processing-worker.js \
+    apps/api/src/scripts/document-processing-worker.ts
+# Durable scheduler process. Deploy the same image with command override
+# ["bun", "/app/scheduler.js"] so scheduled work survives API restarts and
+# runs independently from request handling.
+RUN bun build \
+    --target bun \
+    --outfile /app/scheduler.js \
+    apps/api/src/scheduler/scheduler.ts
 # Bundle the migration entrypoint so its full transitive @/api import graph is
 # resolved at build time. Keep the output at the same directory depth as the
 # source so its `import.meta.dir`-relative migrationsFolder lookup resolves to
@@ -67,15 +83,23 @@ RUN mkdir -p /app/runtime-workers && \
     bun build \
       --target bun \
       --outfile /app/runtime-workers/pdf-worker.js \
-      apps/api/src/handlers/files/pdf-worker.ts && \
+      apps/api/src/lib/files/pdf-worker.ts && \
     bun build \
       --target bun \
       --outfile /app/runtime-workers/extraction-worker.js \
-      apps/api/src/lib/search/extraction-worker.ts
+      apps/api/src/lib/search/extraction-worker.ts && \
+    bun build \
+      --target bun \
+      --outfile /app/runtime-workers/ocr-searchable-pdf-worker.js \
+      apps/api/src/lib/ocr-searchable-pdf-worker.ts
 RUN bun --filter @stll/legal-atlas-runner build
 
-# Run the compiled API as non-root.
-FROM deps AS runner
+# Run the compiled API as non-root. Built from the bare base image: every
+# entrypoint is either the compiled binary or a self-contained
+# `bun build --target bun` bundle, so the runtime image ships only those
+# outputs plus the asset trees they read at runtime; the workspace install
+# (node_modules, manifest tree) stays in the build stages.
+FROM base AS runner
 # Stamp the running container with the release version so the API can
 # return it from /health and tag PostHog events with build metadata.
 # Defaults to "dev" for local `docker build` outside the release flow.
@@ -93,10 +117,13 @@ ENV FEATURE_KNOWLEDGE_TEMPLATES=true
 ENV FEATURE_TODOS=true
 ENV REQUIRE_PERSONAL_AI_KEY=true
 ENV STELLA_WORKER_DIR=/\$bunfs/root/workers
+ENV STELLA_OCR_PDF_FONT_PATH=/\$bunfs/root/fonts/CabinetGrotesk-Regular.otf
 RUN groupadd --system --gid 1001 stella && \
     useradd --system --uid 1001 --gid stella --no-create-home stella
 COPY --chown=stella:stella --from=builder /app/server /app/server
 COPY --chown=stella:stella --from=builder /app/backfill.js /app/backfill.js
+COPY --chown=stella:stella --from=builder /app/document-processing-worker.js /app/document-processing-worker.js
+COPY --chown=stella:stella --from=builder /app/scheduler.js /app/scheduler.js
 COPY --chown=stella:stella --from=builder /app/apps/legal-atlas-runner/dist/index.js /app/legal-atlas.js
 # Bundled migration task entrypoint:
 #   ["bun", "/app/apps/api/src/db/migrate.js"]
@@ -105,6 +132,9 @@ COPY --chown=stella:stella --from=builder /app/apps/api/src/db/migrate.js /app/a
 COPY --chown=stella:stella --from=builder /app/apps/api/drizzle /app/apps/api/drizzle
 RUN mkdir -p '/$bunfs/root'
 COPY --chown=stella:stella --from=builder /app/runtime-workers /\$bunfs/root/workers
+COPY --chown=stella:stella --from=install-inputs \
+    /app/apps/landing/public/fonts/CabinetGrotesk-Regular.otf \
+    /\$bunfs/root/fonts/CabinetGrotesk-Regular.otf
 COPY --chown=stella:stella --from=builder /app/apps/api/src/lib/file-scan/yara /\$bunfs/root/yara
 # @stll/anonymize-wasm resolves its native glue, WASM, and prepared pipeline
 # packages relative to `dist/wasm.mjs`; Bun's compiled binary resolves those

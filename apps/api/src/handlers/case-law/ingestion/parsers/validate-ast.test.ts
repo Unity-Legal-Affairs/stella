@@ -13,7 +13,7 @@ import {
   storedDecisionSignal,
   validateAst,
   validationSignal,
-} from "@/api/handlers/case-law/ingestion/parsers/validate-ast";
+} from "@/api/lib/legal-search/parsers/validate-ast";
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -515,5 +515,40 @@ describe("validationSignal", () => {
         makeBlock({ plainText: text }),
       ]),
     ).toBeUndefined();
+  });
+});
+
+/**
+ * The ancestor-dedup must not re-stringify whole subtrees per content
+ * element — that is quadratic on flat many-paragraph documents. The bound
+ * is deliberately loose: memoized, this document validates in well under a
+ * second, while the quadratic form costs minutes at this size. Anything in
+ * between is machine noise, so a wide bound separates the two behaviours
+ * without flaking when the suite runs in parallel.
+ */
+describe("validateAst scaling", () => {
+  test("a flat many-paragraph document validates in linear-ish time", () => {
+    const count = 6000;
+    const paragraphs = Array.from(
+      { length: count },
+      (_, index) => `<p>Paragraf ${index} sądu okręgowego w sprawie.</p>`,
+    ).join("\n");
+    const html = `<html><body><div>${paragraphs}</div></body></html>`;
+    const blocks: Block[] = Array.from({ length: count }, (_, index) => ({
+      id: `p${index}`,
+      anchorId: `p${index}`,
+      type: "paragraph",
+      inlines: [],
+      plainText: `Paragraf ${index} sądu okręgowego w sprawie.`,
+    }));
+
+    const start = performance.now();
+    const result = validateAst(html, blocks);
+    const elapsed = performance.now() - start;
+
+    expect(result.issues.filter((issue) => issue.severity === "error")).toEqual(
+      [],
+    );
+    expect(elapsed).toBeLessThan(20_000);
   });
 });

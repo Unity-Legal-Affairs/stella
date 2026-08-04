@@ -2,17 +2,17 @@ import { Result } from "better-result";
 import { eq } from "drizzle-orm";
 
 import { properties, propertyDependencies } from "@/api/db/schema";
-import {
-  buildPropertyParts,
-  createPropertyBodySchema,
-  isDocumentTypeClassifierProperty,
-} from "@/api/handlers/properties/create-schema";
-import { lockWorkspacePropertyWrites } from "@/api/handlers/properties/property-lock";
 import { createSafeHandler } from "@/api/lib/api-handlers";
 import type { HandlerConfig } from "@/api/lib/api-handlers";
 import { AUDIT_ACTION, AUDIT_RESOURCE_TYPE } from "@/api/lib/audit-log";
 import { HandlerError } from "@/api/lib/errors/tagged-errors";
 import { LIMITS } from "@/api/lib/limits";
+import {
+  buildPropertyParts,
+  createPropertyBodySchema,
+  isDocumentTypeClassifierProperty,
+} from "@/api/lib/properties/create-schema";
+import { lockWorkspacePropertyWrites } from "@/api/lib/properties/property-lock";
 
 const config = {
   permissions: { property: ["create"] },
@@ -79,14 +79,13 @@ const createProperty = createSafeHandler(
               ),
             ),
           ];
-          // SAFETY: filtered to an IN-list of dependency property IDs, bounded by LIMITS.propertiesCount per workspace
-          // eslint-disable-next-line require-query-limit/require-query-limit
           const dependencyRows = await tx.query.properties.findMany({
             where: {
               id: { in: dependencyIds },
               workspaceId: { eq: workspaceId },
             },
             columns: { id: true },
+            limit: dependencyIds.length,
           });
 
           if (dependencyRows.length !== dependencyIds.length) {

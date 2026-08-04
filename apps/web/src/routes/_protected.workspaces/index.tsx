@@ -46,6 +46,17 @@ import { TOOLBAR_ROW_HEIGHT } from "@/lib/consts";
 import { detached } from "@/lib/detached";
 import { pageTitle } from "@/lib/page-title";
 import { ensureRouteQueryData } from "@/lib/react-query";
+import { useCreateMatterStore } from "@/lib/workspaces/create-matter-store";
+import {
+  workspacesKeys,
+  workspacesRouteOptions,
+} from "@/lib/workspaces/queries";
+import type {
+  MattersColumnId,
+  Workspace,
+  WorkspaceGroup,
+} from "@/lib/workspaces/types";
+import { ALL_COLUMNS } from "@/lib/workspaces/types";
 import { AlphabetIndex } from "@/routes/_protected.workspaces/-components/alphabet-index";
 import { ClientGroupHeader } from "@/routes/_protected.workspaces/-components/client-group-header";
 import { MatterCard } from "@/routes/_protected.workspaces/-components/matter-card";
@@ -56,17 +67,6 @@ import { applyMattersFilters } from "@/routes/_protected.workspaces/-filters/fil
 import { useColumnLabels } from "@/routes/_protected.workspaces/-hooks/use-column-labels";
 import { useSortLabels } from "@/routes/_protected.workspaces/-hooks/use-sort-labels";
 import { getMatterOrganizationResetPatch } from "@/routes/_protected.workspaces/-organization-reset";
-import {
-  workspacesKeys,
-  workspacesRouteOptions,
-} from "@/routes/_protected.workspaces/-queries";
-import { useCreateMatterStore } from "@/routes/_protected.workspaces/-store/create-matter-store";
-import type {
-  MattersColumnId,
-  Workspace,
-  WorkspaceGroup,
-} from "@/routes/_protected.workspaces/-types";
-import { ALL_COLUMNS } from "@/routes/_protected.workspaces/-types";
 import {
   compareWorkspacesByKey,
   groupByClient,

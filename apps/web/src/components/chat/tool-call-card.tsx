@@ -12,6 +12,8 @@ import {
 } from "@stll/ui/components/popover";
 import { cn } from "@stll/ui/lib/utils";
 
+import { ChatActivityOrb } from "@/components/chat/chat-activity-orb";
+import { getChatToolActivityState } from "@/components/chat/chat-activity.logic";
 import {
   type ChatToolCallPart,
   getChatToolTitleKey,
@@ -22,10 +24,10 @@ import {
   advanceToolCallTiming,
   createToolCallTiming,
 } from "@/components/chat/tool-call-timing.logic";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import Tooltip from "@/components/tooltip";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
-import { mcpConnectorsOptions } from "@/routes/_protected.knowledge/-queries";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
+import { mcpConnectorsOptions } from "@/lib/knowledge/queries";
 
 type ToolPart = ChatToolCallPart;
 
@@ -397,6 +399,7 @@ export const ToolCallCard = ({
   });
 
   const isLoading = isRunningToolPart(part);
+  const activityState = isLoading ? getChatToolActivityState(name) : null;
   const [timing, setTiming] = useState(() =>
     createToolCallTiming({ durationMs, isRunning: isLoading, now: Date.now() }),
   );
@@ -468,7 +471,7 @@ export const ToolCallCard = ({
           )}
           onClick={() => {
             if (skillResourceOutput) {
-              useInspectorStore.getState().openSkillResourceTab({
+              useInspectorTabsStore.getState().openSkillResourceTab({
                 skillName: skillResourceOutput.skillName,
                 skillId: skillResourceOutput.skillId,
                 origin: skillResourceOutput.origin,
@@ -492,6 +495,7 @@ export const ToolCallCard = ({
           }}
           type="button"
         >
+          {activityState && <ChatActivityOrb state={activityState} />}
           <span
             className={cn(
               "min-w-0 truncate",
@@ -626,7 +630,7 @@ export const ToolCallCard = ({
           </div>
         )}
       {hasError && errorMessage && (
-        <p className="text-destructive max-w-xl px-2 py-1 text-[11px] leading-relaxed whitespace-pre-wrap">
+        <p className="text-destructive max-w-xl py-1 text-[11px] leading-relaxed whitespace-pre-wrap">
           {errorMessage}
         </p>
       )}

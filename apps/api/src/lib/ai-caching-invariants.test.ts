@@ -38,10 +38,14 @@ describe("TanStack AI is the only live app provider SDK boundary", () => {
     const glob = new Glob("**/*.ts");
     const allowed = new Set([
       "lib/tanstack-ai-models.ts",
+      // Stella's document-transport override subclasses the stable OpenRouter
+      // adapter; model construction remains centralized in tanstack-ai-models.
+      "lib/stella-openrouter-text-adapter.ts",
       // These contract tests deliberately construct real adapters with intercepted
       // clients; they are not imported by app code.
       "handlers/chat/tools/provider-null-normalization.property.test.ts",
       "handlers/chat/tools/tool-schema.test.ts",
+      "lib/provider-document-adapters.test.ts",
     ]);
     const forbiddenPackages = [
       "@tanstack/ai-anthropic",

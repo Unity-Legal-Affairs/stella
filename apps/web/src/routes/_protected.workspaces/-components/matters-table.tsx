@@ -19,14 +19,21 @@ import {
 } from "@stll/ui/components/table";
 import { cn } from "@stll/ui/lib/utils";
 
+import { InlineEdit } from "@/components/inline-edit";
 import Tooltip from "@/components/tooltip";
+import { useMatterContextMenu } from "@/components/workspaces/matter-context-menu";
 import { useFormatter } from "@/i18n/formatting-context";
 import { getFormattingLocale } from "@/i18n/i18n-store";
 import { detached } from "@/lib/detached";
 import { getMatterColor } from "@/lib/matter-colors";
 import { formatRelativeTime } from "@/lib/relative-time";
-import { InlineEdit } from "@/routes/_protected.workspaces/$workspaceId/-components/inline-edit";
-import { useMatterContextMenu } from "@/routes/_protected.workspaces/-components/matter-context-menu";
+import type {
+  MattersColumnId,
+  MattersSortKey,
+  Workspace,
+  WorkspaceGroup,
+} from "@/lib/workspaces/types";
+import { ALL_COLUMNS, isFilterableColumnId } from "@/lib/workspaces/types";
 import {
   getInitials,
   TeamAvatars,
@@ -34,16 +41,6 @@ import {
 import { ColumnFilterButton } from "@/routes/_protected.workspaces/-filters/column-filter-button";
 import { useColumnLabels } from "@/routes/_protected.workspaces/-hooks/use-column-labels";
 import { useSortLabels } from "@/routes/_protected.workspaces/-hooks/use-sort-labels";
-import type {
-  MattersColumnId,
-  MattersSortKey,
-  Workspace,
-  WorkspaceGroup,
-} from "@/routes/_protected.workspaces/-types";
-import {
-  ALL_COLUMNS,
-  isFilterableColumnId,
-} from "@/routes/_protected.workspaces/-types";
 import { useConfigStore } from "@/stores/config-store";
 
 const MAX_VISIBLE_AVATARS = 3;

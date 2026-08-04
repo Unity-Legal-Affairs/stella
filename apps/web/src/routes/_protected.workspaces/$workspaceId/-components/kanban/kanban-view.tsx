@@ -19,6 +19,8 @@ import { useTranslations } from "use-intl";
 import type { OptionColor } from "@stll/api/types";
 import { stellaToast } from "@stll/ui/components/toast";
 
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
+import { getInternalPropertyId } from "@/components/workspaces/entity-utils";
 import { useMountEffect } from "@/hooks/use-effect";
 import { useLatestCallback } from "@/hooks/use-latest-callback";
 import { useAnalytics } from "@/lib/analytics/provider";
@@ -27,9 +29,21 @@ import { detached } from "@/lib/detached";
 import { toSafeId } from "@/lib/safe-id";
 import type { EntityKind, WorkspaceView } from "@/lib/types";
 // -- Auto-scrolling board container with forgiving column drop --
-import { COLUMN_DRAG_TYPE } from "@/routes/_protected.workspaces/$workspaceId/-components/drag-constants";
+import { COLUMN_DRAG_TYPE } from "@/lib/workspaces/drag-constants";
+import {
+  useCreateEntities,
+  useRenameEntity,
+  useUpsertField,
+} from "@/lib/workspaces/mutations/entities";
+import { useUpdateProperty } from "@/lib/workspaces/mutations/properties";
+import {
+  entitiesKeys,
+  useKanbanGroupOptions,
+  visibleEntityFieldIds,
+} from "@/lib/workspaces/queries/entities";
+import { propertiesOptions } from "@/lib/workspaces/queries/properties";
+import { taskKeys } from "@/lib/workspaces/queries/tasks";
 import { EmptyState } from "@/routes/_protected.workspaces/$workspaceId/-components/empty-state";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
 import { KanbanColumn } from "@/routes/_protected.workspaces/$workspaceId/-components/kanban/kanban-column";
 import {
   getEntityGroups,
@@ -43,20 +57,6 @@ import {
   uploadFileEntitiesBatched,
   useBatchUploadLabels,
 } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-create-file-entities";
-import {
-  useCreateEntities,
-  useRenameEntity,
-  useUpsertField,
-} from "@/routes/_protected.workspaces/$workspaceId/-mutations/entities";
-import { useUpdateProperty } from "@/routes/_protected.workspaces/$workspaceId/-mutations/properties";
-import {
-  entitiesKeys,
-  useKanbanGroupOptions,
-  visibleEntityFieldIds,
-} from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import { propertiesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
-import { taskKeys } from "@/routes/_protected.workspaces/$workspaceId/-queries/tasks";
-import { getInternalPropertyId } from "@/routes/_protected.workspaces/$workspaceId/-utils";
 
 type KanbanViewProps = {
   view: WorkspaceView;
@@ -114,7 +114,7 @@ export const KanbanView = ({ view, workspaceId }: KanbanViewProps) => {
         title: t("success.taskCreated"),
         type: "success",
       });
-      useInspectorStore
+      useInspectorTabsStore
         .getState()
         .openTask({ taskId: entityId, workspaceId, isNew: true });
       return;

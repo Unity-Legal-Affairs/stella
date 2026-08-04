@@ -9,7 +9,6 @@ import { useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useRouteContext } from "@tanstack/react-router";
 import { panic } from "better-result";
 import {
   ArrowRightIcon,
@@ -42,6 +41,7 @@ import { stellaToast } from "@stll/ui/components/toast";
 import { cn } from "@stll/ui/lib/utils";
 
 import { AcceptAllButton } from "@/components/ai-suggestions/accept-all-button";
+import { canRevertReviewSuggestion } from "@/components/ai-suggestions/review-bar.logic";
 import {
   REVIEW_UNSPECIFIED_AREA,
   SEVERITY_ORDER,
@@ -65,10 +65,11 @@ import {
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { useFormatter, useLocale } from "@/i18n/formatting-context";
 import { authClient } from "@/lib/auth";
+import { sessionOptions } from "@/lib/auth-queries";
+import { useAuthenticatedUser } from "@/lib/authenticated-user-context";
 import { compareByLocale } from "@/lib/collation";
 import { detached } from "@/lib/detached";
 import { toAuthClientError } from "@/lib/errors/auth";
-import { sessionOptions } from "@/routes/-queries";
 
 const EMPTY_SUGGESTIONS: readonly ReviewSuggestion[] = [];
 
@@ -182,7 +183,7 @@ export const ReviewPanelImpl = ({
     navigateTo,
   } = useReviewActions({
     entityId,
-    workspaceId,
+    persistence: { type: "workspace", workspaceId },
     docxEditorRef,
     docxEditable,
     requestDocxEditMode,
@@ -191,14 +192,7 @@ export const ReviewPanelImpl = ({
   // (preferredName / wordEditShortcut). The popover next to
   // "Tracked changes" exposes them read-only with a deep link to
   // account settings — single source of truth, no in-panel state.
-  const user = useRouteContext({
-    from: "/_protected",
-    select: (ctx) => ({
-      name: ctx.user.name ?? null,
-      preferredName: ctx.user.preferredName ?? null,
-      wordEditShortcut: ctx.user.wordEditShortcut ?? null,
-    }),
-  });
+  const user = useAuthenticatedUser();
   const wordAuthor = getWordEditAuthorName(user);
   const wordShortcut =
     getWordEditShortcut(user) || computeInitialsFrom(wordAuthor);
@@ -1026,11 +1020,7 @@ const SuggestionRow = ({
   const showArea =
     item.area.length > 0 && item.area !== REVIEW_UNSPECIFIED_AREA;
   const isAccepted = item.status === "accepted";
-  // A hydrated, pre-reload accepted item carries no live `undoHandle`
-  // (it didn't survive the reload), so Revert can't undo the document
-  // change — hide the affordance. Reject stays revertible, and pending
-  // hydrated items re-apply via their `pendingOperation`.
-  const canRevert = !(item.status === "accepted" && item.undoHandle === null);
+  const canRevert = canRevertReviewSuggestion(item);
 
   if (isResolved) {
     return (

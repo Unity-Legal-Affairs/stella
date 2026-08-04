@@ -39,6 +39,13 @@ const BASE_URL =
 const PAGE_SIZE = 100;
 const LEGACY_PAGE_SIZE = 100;
 const ITEM_CONCURRENCY = 10;
+/**
+ * How far back the newest-first walk reaches before returning to the head.
+ * Comfortably more than this source publishes between cycles, so a slow or
+ * skipped cycle still cannot let a decision slip past unseen; already-stored
+ * decisions in the overlap cost a list read and are then deduplicated.
+ */
+const LIVE_WINDOW_ITEMS = 5000;
 
 const arrayOrEmpty = <T>(value: T[] | null | undefined): T[] => {
   if (value === undefined || value === null) {
@@ -265,6 +272,7 @@ const parseItemWithDetail = async (
     language: "sk",
     decisionDate,
     decisionType,
+    sourceDocumentId: toOptionalValue(item.guid),
     sourceUrl: item.guid
       ? sanitizeUrl(sourceUrlForDecision(item.guid, detail?.dokument?.url))
       : undefined,
@@ -296,6 +304,20 @@ const parseItemWithDetail = async (
   };
 };
 
+/** One list page, in the given order. */
+const listRequest = (
+  page: number,
+  sortDirection: "ASC" | "DESC",
+): { url: string; init: RequestInit } => ({
+  url: `${BASE_URL}?${new URLSearchParams({
+    page: String(page),
+    size: String(PAGE_SIZE),
+    sortProperty: "datumVydania",
+    sortDirection,
+  }).toString()}`,
+  init: { headers: { Accept: "application/json" } },
+});
+
 export const skCourtsAdapter: SourceAdapter = {
   key: ADAPTER_KEYS.SK_COURTS,
   name: "obcan.justice.sk",
@@ -311,6 +333,31 @@ export const skCourtsAdapter: SourceAdapter = {
   // 30 min cycle fits ~70 pages = ~7000 decisions per cursor persist.
   maxCycleMs: 30 * 60 * 1000,
 
+  /**
+   * The list endpoint reports `numFound` for the whole collection, so one
+   * minimal request measures the source. Without it this corpus — the
+   * largest we hold — has no completeness signal at all.
+   */
+  async getTotalCount(signal) {
+    const response = await fetchWithTimeout(
+      `${BASE_URL}?${new URLSearchParams({ page: "0", size: "1" }).toString()}`,
+      {
+        signal,
+        headers: { Accept: "application/json" },
+        timeoutMs: ADAPTER_TIMEOUT.REQUEST,
+      },
+    );
+    if (!response.ok) {
+      return null;
+    }
+    const json: unknown = await response.json();
+    if (!isRecord(json)) {
+      return null;
+    }
+    const total = json["numFound"];
+    return typeof total === "number" && total > 0 ? total : null;
+  },
+
   fetchPage: createPagePaginatedFetch<SkApiResponse>({
     adapterKey: ADAPTER_KEYS.SK_COURTS,
     pageSize: PAGE_SIZE,
@@ -319,17 +366,29 @@ export const skCourtsAdapter: SourceAdapter = {
     listTimeoutMs: 60_000,
     itemConcurrency: ITEM_CONCURRENCY,
 
-    buildRequest: (page) => ({
-      url: `${BASE_URL}?${new URLSearchParams({
-        page: String(page),
-        size: String(PAGE_SIZE),
-        sortProperty: "datumVydania",
-        sortDirection: "DESC",
-      }).toString()}`,
-      init: {
-        headers: { Accept: "application/json" },
+    buildRequest: (page) => listRequest(page, "DESC"),
+
+    // Oldest-first until the collection has been seen, then newest-first.
+    // Walking this source newest-first from the start cannot catch up: it
+    // publishes continuously, and each new decision shifts every later
+    // offset, so items slide past the cursor unseen. Oldest-first converges
+    // because new decisions land at the end, behind the cursor.
+    traversal: [
+      {
+        name: "backfill",
+        buildRequest: (page) => listRequest(page, "ASC"),
+        followedBy: "live",
       },
-    }),
+      {
+        name: "live",
+        buildRequest: (page) => listRequest(page, "DESC"),
+        followedBy: null,
+        // Newest-first only has to reach as far back as what was published
+        // since the last cycle. Walking further would drift into history
+        // this source has already been caught up on.
+        windowItems: LIVE_WINDOW_ITEMS,
+      },
+    ],
 
     parseResponse: async (response) => {
       const json: unknown = await response.json();

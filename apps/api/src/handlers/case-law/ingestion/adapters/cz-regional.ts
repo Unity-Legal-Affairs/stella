@@ -1,5 +1,6 @@
 import { panic, Result } from "better-result";
 
+import { splitCaseReference } from "@/api/handlers/case-law/case-number";
 import {
   ADAPTER_KEYS,
   ADAPTER_TIMEOUT,
@@ -28,7 +29,11 @@ import {
 import { parseRegionalDecision } from "@/api/handlers/case-law/ingestion/parsers/cz-regional";
 import { captureError } from "@/api/lib/analytics/capture";
 import { addUtcDays } from "@/api/lib/dates";
-import { AdapterFetchError } from "@/api/lib/errors/tagged-errors";
+import {
+  AdapterFetchError,
+  FetchBoundaryError,
+} from "@/api/lib/errors/tagged-errors";
+import { errorTag } from "@/api/lib/errors/utils";
 import { fetchWithTimeout } from "@/api/lib/fetch";
 import { logger } from "@/api/lib/observability/logger";
 import { sanitizeUrl } from "@/api/lib/sanitize-url";
@@ -382,24 +387,45 @@ const fetchFinaldoc = async (
   }
 };
 
+/**
+ * The publisher's document id, which this source states only as the last
+ * segment of the item's link (`/api/finaldoc/<id>`). Returns undefined for a
+ * link that carries no segment, so identity falls back to the case number
+ * rather than keying every such row on the same empty string.
+ */
+const documentIdFromLink = (link: string | undefined): string | undefined => {
+  if (link === undefined) {
+    return undefined;
+  }
+  return /\/(?<id>[^/?#]+)\/*(?:[?#]|$)/u.exec(link)?.groups?.["id"];
+};
+
 const parseItem = (item: CzRegionalApiItem): IngestionResult | null => {
   if (!item.jednaciCislo || !item.soud) {
     return null;
   }
 
   const raw = JSON.stringify(item);
+  // This source publishes the docket with the sheet number appended.
+  const { caseNumber, sheetNumber } = splitCaseReference(item.jednaciCislo);
 
   return {
-    caseNumber: item.jednaciCislo,
+    caseNumber,
+    sheetNumber,
     ecli: toOptionalValue(item.ecli),
     court: item.soud,
     country: "CZE",
     language: "cs",
     decisionDate: toOptionalValue(item.datumVydani),
+    sourceDocumentId: documentIdFromLink(toOptionalValue(item.odkaz)),
     sourceUrl: sanitizeUrl(toOptionalValue(item.odkaz) ?? ""),
     documentUrl: sanitizeUrl(toOptionalValue(item.odkaz) ?? ""),
     metadata: {
-      caseNumber: item.jednaciCislo,
+      caseNumber,
+      sheetNumber,
+      // The reference exactly as the court publishes it, docket and sheet
+      // together, so the split stays reversible from what we stored.
+      publishedCaseNumber: item.jednaciCislo,
       ecli: toOptionalValue(item.ecli),
       court: item.soud,
       decisionDate: toOptionalValue(item.datumVydani),
@@ -517,6 +543,106 @@ const todayIso = (): string =>
 const defaultDate = (): string =>
   addUtcDays(new Date(), -30).toISOString().split("T")[0] ?? "1970-01-01";
 
+type FetchListPageOptions = {
+  cursor: string | null;
+  signal?: AbortSignal | undefined;
+  state: CursorState;
+  url: string;
+};
+
+const isRetryableListFailure = (error: AdapterFetchError): boolean =>
+  isTimeoutError(error.cause) ||
+  (error.cause instanceof FetchBoundaryError &&
+    error.cause.status !== undefined &&
+    error.cause.status >= 500);
+
+const fetchListPage = async ({
+  cursor,
+  signal,
+  state,
+  url,
+}: FetchListPageOptions) =>
+  await Result.tryPromise(
+    {
+      try: async ({ signal: attemptSignal }) => {
+        if (attemptSignal?.aborted) {
+          throw new DOMException("Cycle aborted", "AbortError");
+        }
+
+        const response = await fetchWithTimeout(url, {
+          signal: attemptSignal,
+          headers: {
+            Accept: "application/json",
+            "User-Agent": INGESTION_USER_AGENT,
+          },
+          timeoutMs: ADAPTER_TIMEOUT.REQUEST,
+        });
+
+        if (response.status >= 500) {
+          throw new FetchBoundaryError({
+            url,
+            status: response.status,
+            statusText: response.statusText,
+            message: `CZ Regional API error: ${response.status}`,
+          });
+        }
+
+        return response;
+      },
+      catch: (cause) => {
+        if (cause instanceof FetchBoundaryError) {
+          return new AdapterFetchError({
+            message: cause.message,
+            adapterKey: ADAPTER_KEYS.CZ_REGIONAL,
+            cursor,
+            cause,
+            ...(cause.status === undefined ? {} : { httpStatus: cause.status }),
+          });
+        }
+        return adapterCatch(ADAPTER_KEYS.CZ_REGIONAL, cursor)(cause);
+      },
+    },
+    {
+      ...(signal ? { signal } : {}),
+      retry: {
+        times: LIST_FETCH_RETRIES,
+        shouldRetry: isRetryableListFailure,
+        delayMs: (failure, { attempt }) => {
+          if (isTimeoutError(failure.cause)) {
+            const delayMs = LIST_FETCH_RETRY_DELAY_MS * attempt;
+            logger.warn("case_law.ingestion.page_timeout_retry", {
+              adapterKey: ADAPTER_KEYS.CZ_REGIONAL,
+              "error.type": errorTag(failure),
+              page: state.page,
+              date: state.date,
+              retry: attempt,
+              maxRetries: LIST_FETCH_RETRIES,
+              retryDelayMs: delayMs,
+            });
+            return delayMs;
+          }
+
+          if (
+            !(failure.cause instanceof FetchBoundaryError) ||
+            failure.cause.status === undefined
+          ) {
+            panic("Retry delay requested for a non-retryable list failure");
+          }
+          logger.warn("case_law.ingestion.page_server_error_retry", {
+            adapterKey: ADAPTER_KEYS.CZ_REGIONAL,
+            "error.type": errorTag(failure),
+            page: state.page,
+            date: state.date,
+            httpStatus: failure.cause.status,
+            retry: attempt,
+            maxRetries: LIST_FETCH_RETRIES,
+          });
+          return LIST_FETCH_RETRY_DELAY_MS;
+        },
+      },
+    },
+  );
+
 export const czRegionalAdapter: SourceAdapter = {
   key: ADAPTER_KEYS.CZ_REGIONAL,
   name: "Czech Regional Courts",
@@ -528,11 +654,55 @@ export const czRegionalAdapter: SourceAdapter = {
   // tight for large pages with slow upstream responses.
   pageTimeoutMs: 100_000,
 
-  async getTotalCount(_signal) {
-    // The rozhodnuti.justice.cz API is date-based with no
-    // single total count endpoint. There is no efficient way
-    // to get the total without crawling all dates.
-    return await Promise.resolve(null);
+  /**
+   * The year endpoint (`/opendata/{year}`) returns exact per-month
+   * publication counts, so the source's total is the sum over the years it
+   * has published — from October 2020, when the open-data feed began. A
+   * failed year returns null rather than a partial sum, because an
+   * undercount would read as a coverage gap that does not exist.
+   */
+  async getTotalCount(signal) {
+    try {
+      const FIRST_PUBLICATION_YEAR = 2020;
+      const currentYear = new Date().getFullYear();
+      const years = Array.from(
+        { length: currentYear - FIRST_PUBLICATION_YEAR + 1 },
+        (_, i) => FIRST_PUBLICATION_YEAR + i,
+      );
+      const perYear = await Promise.all(
+        years.map(async (year) => {
+          const response = await fetchWithTimeout(
+            `${BASE_URL}/opendata/${year}`,
+            { signal, timeoutMs: ADAPTER_TIMEOUT.REQUEST },
+          );
+          if (!response.ok) {
+            return null;
+          }
+          const json: unknown = await response.json();
+          if (!Array.isArray(json)) {
+            return null;
+          }
+          let sum = 0;
+          for (const month of json) {
+            if (!isRecord(month) || typeof month["pocet"] !== "number") {
+              return null;
+            }
+            sum += month["pocet"];
+          }
+          return sum;
+        }),
+      );
+      let total = 0;
+      for (const sum of perYear) {
+        if (sum === null) {
+          return null;
+        }
+        total += sum;
+      }
+      return total > 0 ? total : null;
+    } catch {
+      return null;
+    }
   },
 
   async fetchPage(cursor, _config, signal) {
@@ -545,74 +715,27 @@ export const czRegionalAdapter: SourceAdapter = {
         const url = buildDayUrl(state.date, state.page);
         const fetchT0 = performance.now();
 
-        // Retry on timeout / 5xx up to LIST_FETCH_RETRIES times.
-        let response: Response | undefined;
-        for (let attempt = 0; attempt <= LIST_FETCH_RETRIES; attempt++) {
+        const responseResult = await fetchListPage({
+          cursor,
+          signal,
+          state,
+          url,
+        });
+        if (Result.isError(responseResult)) {
           if (signal?.aborted) {
             throw new DOMException("Cycle aborted", "AbortError");
           }
-
-          try {
-            // oxlint-disable-next-line no-await-in-loop -- sequential retry loop; each attempt awaits the previous attempt's outcome before retrying
-            response = await fetchWithTimeout(url, {
-              signal,
-              headers: {
-                Accept: "application/json",
-                "User-Agent": INGESTION_USER_AGENT,
-              },
-              timeoutMs: ADAPTER_TIMEOUT.REQUEST,
-            });
-          } catch (fetchError) {
-            if (isTimeoutError(fetchError) && !signal?.aborted) {
-              if (attempt < LIST_FETCH_RETRIES) {
-                const delayMs = LIST_FETCH_RETRY_DELAY_MS * (attempt + 1);
-                logger.warn("case_law.ingestion.page_timeout_retry", {
-                  adapterKey: ADAPTER_KEYS.CZ_REGIONAL,
-                  page: state.page,
-                  date: state.date,
-                  retry: attempt + 1,
-                  maxRetries: LIST_FETCH_RETRIES,
-                  retryDelayMs: delayMs,
-                });
-                // oxlint-disable-next-line no-await-in-loop -- exponential backoff delay between sequential retry attempts
-                await Bun.sleep(delayMs);
-                continue;
-              }
-              logger.warn("case_law.ingestion.page_timeout_exhausted", {
-                adapterKey: ADAPTER_KEYS.CZ_REGIONAL,
-                page: state.page,
-                date: state.date,
-                retries: LIST_FETCH_RETRIES,
-              });
-            }
-            throw fetchError;
-          }
-
-          if (response.ok || response.status < 500) {
-            break;
-          }
-
-          if (attempt < LIST_FETCH_RETRIES) {
-            logger.warn("case_law.ingestion.page_server_error_retry", {
+          if (isTimeoutError(responseResult.error.cause)) {
+            logger.warn("case_law.ingestion.page_timeout_exhausted", {
               adapterKey: ADAPTER_KEYS.CZ_REGIONAL,
               page: state.page,
               date: state.date,
-              httpStatus: response.status,
-              retry: attempt + 1,
-              maxRetries: LIST_FETCH_RETRIES,
+              retries: LIST_FETCH_RETRIES,
             });
-            // oxlint-disable-next-line no-await-in-loop -- backoff delay between sequential server-error retry attempts
-            await Bun.sleep(LIST_FETCH_RETRY_DELAY_MS);
           }
+          throw responseResult.error;
         }
-
-        if (!response) {
-          throw new AdapterFetchError({
-            message: `CZ Regional: no response after ${LIST_FETCH_RETRIES} retries`,
-            adapterKey: ADAPTER_KEYS.CZ_REGIONAL,
-            cursor,
-          });
-        }
+        const response = responseResult.value;
 
         if (!response.ok) {
           // 404 means no data for this date; skip forward

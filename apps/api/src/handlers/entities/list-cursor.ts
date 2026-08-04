@@ -2,8 +2,8 @@ import { and, gt, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 
 import { entities, fields } from "@/api/db/schema";
-import { isValidTimestampCursorValue } from "@/api/handlers/entities/cursor-validation";
 import type { SafeId } from "@/api/lib/branded-types";
+import { isValidTimestampCursorValue } from "@/api/lib/entities/cursor-validation";
 import { HandlerError } from "@/api/lib/errors/tagged-errors";
 import {
   decodePaginationCursor,
@@ -17,7 +17,7 @@ import {
 export const ENTITY_LIST_TIMESTAMP_CURSOR_FORMAT = 'YYYY-MM-DD"T"HH24:MI:SS.US';
 
 export const entityListTimestampCursorExpr = (expr: SQL): SQL<string> =>
-  sql<string>`to_char(${expr}, ${ENTITY_LIST_TIMESTAMP_CURSOR_FORMAT})`;
+  sql<string>`to_char(${expr} AT TIME ZONE 'UTC', ${ENTITY_LIST_TIMESTAMP_CURSOR_FORMAT})`;
 
 type EntityListCursor = {
   createdAt: string;
@@ -113,9 +113,9 @@ export const entityListCursorCondition = (
 
   return (
     or(
-      sql`${entities.createdAt} > ${cursor.createdAt}::timestamp`,
+      sql`${entities.createdAt} > (${cursor.createdAt}::timestamp AT TIME ZONE 'UTC')`,
       and(
-        sql`${entities.createdAt} = ${cursor.createdAt}::timestamp`,
+        sql`${entities.createdAt} = (${cursor.createdAt}::timestamp AT TIME ZONE 'UTC')`,
         gt(entities.id, cursor.id),
       ),
     ) ?? undefined
@@ -131,13 +131,13 @@ export const entityFileListCursorCondition = (
 
   return (
     or(
-      sql`${entities.createdAt} > ${cursor.createdAt}::timestamp`,
+      sql`${entities.createdAt} > (${cursor.createdAt}::timestamp AT TIME ZONE 'UTC')`,
       and(
-        sql`${entities.createdAt} = ${cursor.createdAt}::timestamp`,
+        sql`${entities.createdAt} = (${cursor.createdAt}::timestamp AT TIME ZONE 'UTC')`,
         gt(entities.id, cursor.id),
       ),
       and(
-        sql`${entities.createdAt} = ${cursor.createdAt}::timestamp`,
+        sql`${entities.createdAt} = (${cursor.createdAt}::timestamp AT TIME ZONE 'UTC')`,
         sql`${entities.id} = ${cursor.id}`,
         gt(fields.id, cursor.fieldId),
       ),

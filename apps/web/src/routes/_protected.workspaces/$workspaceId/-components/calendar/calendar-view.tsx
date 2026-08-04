@@ -7,6 +7,7 @@ import { useTranslations } from "use-intl";
 
 import { stellaToast } from "@stll/ui/components/toast";
 
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import { useLatestCallback } from "@/hooks/use-latest-callback";
 import { useLocale } from "@/i18n/formatting-context";
 import { getFirstWeekday, getWeekendDays } from "@/i18n/week";
@@ -16,14 +17,13 @@ import { detached } from "@/lib/detached";
 import { toAPIError } from "@/lib/errors/api";
 import { toSafeId } from "@/lib/safe-id";
 import type { EntityKind, WorkspaceView } from "@/lib/types";
-import { EmptyState } from "@/routes/_protected.workspaces/$workspaceId/-components/empty-state";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
-import { useUpsertField } from "@/routes/_protected.workspaces/$workspaceId/-mutations/entities";
+import { useUpsertField } from "@/lib/workspaces/mutations/entities";
 import {
   calendarTasksKeys,
   calendarTasksOptions,
-} from "@/routes/_protected.workspaces/$workspaceId/-queries/calendar-tasks";
-import { entitiesKeys } from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
+} from "@/lib/workspaces/queries/calendar-tasks";
+import { entitiesKeys } from "@/lib/workspaces/queries/entities";
+import { EmptyState } from "@/routes/_protected.workspaces/$workspaceId/-components/empty-state";
 
 import { CalendarDayCell } from "./calendar-day-cell";
 import { CalendarHeader } from "./calendar-header";
@@ -141,7 +141,7 @@ export const CalendarView = ({ view, workspaceId }: CalendarViewProps) => {
       await invalidateCalendarTasks();
     }
 
-    useInspectorStore
+    useInspectorTabsStore
       .getState()
       .openTask({ taskId: entityId, workspaceId, isNew: true });
   };

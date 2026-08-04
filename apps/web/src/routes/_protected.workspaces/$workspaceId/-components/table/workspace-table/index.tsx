@@ -20,16 +20,18 @@ import { useTranslations } from "use-intl";
 import { stellaToast } from "@stll/ui/components/toast";
 import { cn } from "@stll/ui/lib/utils";
 
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
+import { countDescendants } from "@/components/workspaces/entity-utils";
+import type { WorkspaceTable as WorkspaceTableType } from "@/components/workspaces/table/types";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
+import { ENTITY_DRAG_TYPE } from "@/lib/workspaces/drag-constants";
+import { useRenameEntity } from "@/lib/workspaces/mutations/entities";
 import { BottomRow } from "@/routes/_protected.workspaces/$workspaceId/-components/bottom-row";
 import { BulkAddColumns } from "@/routes/_protected.workspaces/$workspaceId/-components/bulk-add-columns";
-import { ENTITY_DRAG_TYPE } from "@/routes/_protected.workspaces/$workspaceId/-components/drag-constants";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
 import {
   getNextSelectAllRowSelection,
   getSelectAllState,
 } from "@/routes/_protected.workspaces/$workspaceId/-components/table/select-all.logic";
-import type { WorkspaceTable as WorkspaceTableType } from "@/routes/_protected.workspaces/$workspaceId/-components/table/types";
 import {
   WorkspaceGridFillerCell,
   WorkspaceGridRow,
@@ -71,8 +73,6 @@ import {
 import { DraggableRow } from "@/routes/_protected.workspaces/$workspaceId/-components/table/workspace-table/row-cells";
 import { useTableStore } from "@/routes/_protected.workspaces/$workspaceId/-hooks/table-store";
 import type { TableContentMode } from "@/routes/_protected.workspaces/$workspaceId/-hooks/table-store";
-import { useRenameEntity } from "@/routes/_protected.workspaces/$workspaceId/-mutations/entities";
-import { countDescendants } from "@/routes/_protected.workspaces/$workspaceId/-utils";
 
 type WorkspaceTableProps = {
   workspaceId: string;
@@ -193,14 +193,14 @@ export const WorkspaceTable = ({
 
   const renameEntity = useRenameEntity();
 
-  const activeEntityId = useInspectorStore((s) => {
+  const activeEntityId = useInspectorTabsStore((s) => {
     if (!s.activeId) {
       return null;
     }
     const tab = s.tabs.find((candidate) => candidate.id === s.activeId);
     return tab?.type === "pdf" ? tab.entityId : null;
   });
-  const activePropertyId = useInspectorStore((s) => {
+  const activePropertyId = useInspectorTabsStore((s) => {
     if (!s.activeId) {
       return null;
     }
@@ -208,7 +208,7 @@ export const WorkspaceTable = ({
     return tab?.type === "pdf" ? (tab.propertyId ?? null) : null;
   });
 
-  const activeTaskId = useInspectorStore((s) => {
+  const activeTaskId = useInspectorTabsStore((s) => {
     if (!s.activeId) {
       return null;
     }

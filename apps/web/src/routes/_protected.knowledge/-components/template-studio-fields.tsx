@@ -62,6 +62,7 @@ import { api } from "@/lib/api";
 import { optionalArray } from "@/lib/arrays";
 import { detached } from "@/lib/detached";
 import { userErrorMessage } from "@/lib/errors/user-safe";
+import { knowledgeKeys, templateClausesOptions } from "@/lib/knowledge/queries";
 import { toSafeId } from "@/lib/safe-id";
 import { inputTypeValueKind, VALUE_TYPE_META } from "@/lib/value-types";
 import { LinkClauseDialog } from "@/routes/_protected.knowledge/-components/link-clause-dialog";
@@ -96,10 +97,6 @@ import {
   type StudioField,
 } from "@/routes/_protected.knowledge/-components/template-studio-store";
 import { FieldConfigEditor } from "@/routes/_protected.knowledge/-components/template-wizard";
-import {
-  knowledgeKeys,
-  templateClausesOptions,
-} from "@/routes/_protected.knowledge/-queries";
 
 const effectiveSlotByLink = (
   pending: readonly { linkId: string; slotName: string }[],
@@ -592,7 +589,7 @@ const OutlineRow = ({
   if (node.type === "field") {
     const field = fields.find((f) => f.path === node.path);
     // Yes/no fields live under the Conditions disclosure as questions.
-    if (field !== undefined && field.inputType === "boolean") {
+    if (field?.inputType === "boolean") {
       return null;
     }
     const Icon =
@@ -684,7 +681,7 @@ const OutlineRow = ({
   // doesn't have to drill into the group to reach the only field inside.
   if (node.kind === "each") {
     const onlyChild = node.children.length === 1 ? node.children[0] : undefined;
-    if (onlyChild !== undefined && onlyChild.type === "field") {
+    if (onlyChild?.type === "field") {
       const loopField = fields.find((f) => f.path === onlyChild.path);
       const LoopIcon =
         loopField === undefined

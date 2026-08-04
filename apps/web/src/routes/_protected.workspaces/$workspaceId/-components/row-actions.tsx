@@ -10,6 +10,7 @@ import {
   EllipsisVerticalIcon,
   EyeIcon,
   FileOutputIcon,
+  FileTextIcon,
   FolderPlusIcon,
   FolderSyncIcon,
   LaptopIcon,
@@ -18,6 +19,7 @@ import {
   MessageSquareIcon,
   PencilIcon,
   RefreshCwIcon,
+  ScanTextIcon,
   Trash2Icon,
   UploadIcon,
 } from "lucide-react";
@@ -33,6 +35,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@stll/ui/components/alert-dialog";
+import { BidiText } from "@stll/ui/components/bidi-text";
 import { Button } from "@stll/ui/components/button";
 import {
   Menu,
@@ -47,9 +50,23 @@ import {
 import { stellaToast } from "@stll/ui/components/toast";
 
 import { useRequestChatAbout } from "@/components/chat/use-request-chat-about";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import Tooltip from "@/components/tooltip";
+import { CopyToMatterDialog } from "@/components/workspaces/copy-to-matter-dialog";
+import {
+  buildSelectionParentLookup,
+  resolveAncestorIds,
+  type CopyToMatterEntity,
+} from "@/components/workspaces/copy-to-matter-dialog.logic";
+import {
+  getEntityName,
+  getFirstFile,
+} from "@/components/workspaces/entity-utils";
+import { useEntitiesCountLimit } from "@/components/workspaces/hooks/use-limits";
+import type { TableTreeNode } from "@/components/workspaces/table/types";
 import { PDF_MIME_TYPE } from "@/consts";
 import { env } from "@/env";
+import { useAnalytics } from "@/lib/analytics/provider";
 import { api } from "@/lib/api";
 import { apiUrl } from "@/lib/api-url";
 import { getFreshLinkedAccount } from "@/lib/auth-session";
@@ -63,6 +80,7 @@ import { userErrorFromThrown } from "@/lib/errors/user-safe";
 import { fetchWithTimeout } from "@/lib/fetch";
 import { toSafeId } from "@/lib/safe-id";
 import type {
+  OcrExportStatus,
   PropertyId,
   WorkspaceCellMetadata,
   WorkspaceEntity,
@@ -70,44 +88,43 @@ import type {
 import { isFileDisplayable } from "@/lib/types";
 import { downloadFile } from "@/lib/utils";
 import {
+  useCreateEntities,
+  useDeleteEntities,
+} from "@/lib/workspaces/mutations/entities";
+import { entitiesKeys } from "@/lib/workspaces/queries/entities";
+import { propertiesOptions } from "@/lib/workspaces/queries/properties";
+import { useIsWorkflowRunning } from "@/lib/workspaces/queries/workspace";
+import { useWorkspaceStore } from "@/lib/workspaces/store";
+import {
   CellLockMenuItem,
   CellMetadataMenuSection,
 } from "@/routes/_protected.workspaces/$workspaceId/-components/cell-metadata-flags";
-import { CopyToMatterDialog } from "@/routes/_protected.workspaces/$workspaceId/-components/copy-to-matter-dialog";
-import {
-  buildSelectionParentLookup,
-  resolveAncestorIds,
-  type CopyToMatterEntity,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/copy-to-matter-dialog.logic";
 import { getExtension } from "@/routes/_protected.workspaces/$workspaceId/-components/file-extension";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
+import { requestManualOcr } from "@/routes/_protected.workspaces/$workspaceId/-components/request-manual-ocr";
 import {
+  canRunManualOcr,
   getDesktopEditLockState,
+  getOcrExportFileName,
+  getOcrExportFormats,
   getPdfDownloadFileName,
+  hasOcrExport,
+  type OcrExportFormat,
+  type OcrSource,
+  type RowActionContext,
 } from "@/routes/_protected.workspaces/$workspaceId/-components/row-actions.logic";
-import type { TableTreeNode } from "@/routes/_protected.workspaces/$workspaceId/-components/table/types";
-import { useEntitiesCountLimit } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-limits";
 import { useRetryCell } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-retry-cell";
 import { useUploadVersion } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-upload-version";
-import {
-  useCreateEntities,
-  useDeleteEntities,
-} from "@/routes/_protected.workspaces/$workspaceId/-mutations/entities";
-import { entitiesKeys } from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import { propertiesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
-import { useIsWorkflowRunning } from "@/routes/_protected.workspaces/$workspaceId/-queries/workspace";
-import { useWorkspaceStore } from "@/routes/_protected.workspaces/$workspaceId/-store";
-import {
-  getEntityName,
-  getFirstFile,
-} from "@/routes/_protected.workspaces/$workspaceId/-utils";
 
 export type VirtualAnchor = {
   getBoundingClientRect: () => DOMRect;
 };
 
+const EMPTY_OCR_SOURCES: readonly OcrSource[] = [];
+
 type RowActionsProps = {
   entity: WorkspaceEntity;
+  ocrSource?: OcrSource | undefined;
+  ocrSources?: readonly OcrSource[] | undefined;
   workspaceId: string;
   open?: boolean | undefined;
   onOpenChange?: ((open: boolean) => void) | undefined;
@@ -131,6 +148,37 @@ type RowActionsProps = {
     | undefined;
 };
 
+const OcrExportMenuItems = ({
+  exportStatus,
+  onDownload,
+  searchablePdfLabel,
+  textLabel,
+}: {
+  exportStatus: OcrExportStatus;
+  onDownload: (format: OcrExportFormat) => void;
+  searchablePdfLabel: string;
+  textLabel: string;
+}) => {
+  const formats = getOcrExportFormats(exportStatus);
+
+  return (
+    <>
+      {formats.includes("searchable-pdf") && (
+        <MenuItem onClick={() => onDownload("searchable-pdf")}>
+          <FileOutputIcon />
+          {searchablePdfLabel}
+        </MenuItem>
+      )}
+      {formats.includes("text") && (
+        <MenuItem onClick={() => onDownload("text")}>
+          <FileTextIcon />
+          {textLabel}
+        </MenuItem>
+      )}
+    </>
+  );
+};
+
 export const RowActions = ({
   entity,
   workspaceId,
@@ -145,8 +193,11 @@ export const RowActions = ({
   selectedEntities,
   getAncestorIds,
   cellMetadataTarget,
+  ocrSource,
+  ocrSources = EMPTY_OCR_SOURCES,
 }: RowActionsProps) => {
   const t = useTranslations();
+  const analytics = useAnalytics();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const deleteEntities = useDeleteEntities();
@@ -158,6 +209,7 @@ export const RowActions = ({
     CopyToMatterEntity[]
   >([]);
   const [isRetrying, setIsRetrying] = useState(false);
+  const [isOcrPending, setIsOcrPending] = useState(false);
   const { data: properties } = useQuery(propertiesOptions(workspaceId));
   const uploadVersionInputRef = useRef<HTMLInputElement>(null);
   const file = getFirstFile(entity);
@@ -167,6 +219,26 @@ export const RowActions = ({
   const bulkTargets = isBulk ? selectedEntities : [entity];
   const isCellContext =
     !isBulk && cellMetadataTarget !== null && cellMetadataTarget !== undefined;
+  let rowActionContext: RowActionContext = "row";
+  if (isBulk) {
+    rowActionContext = "bulk";
+  } else if (isCellContext) {
+    rowActionContext = "cell";
+  }
+  const canRunOcr = canRunManualOcr({
+    context: rowActionContext,
+    entity,
+    ocrSource,
+  });
+  const rowOcrSources = isCellContext
+    ? []
+    : ocrSources.filter((source) =>
+        canRunManualOcr({
+          context: rowActionContext,
+          entity,
+          ocrSource: source,
+        }),
+      );
   const isDocx = !isBulk && file?.mimeType === DOCX_MIME;
   const desktopEditLockState = getDesktopEditLockState(entity.activeEditBy);
   const isLockedByMe = isDocx && desktopEditLockState === "locked-by-me";
@@ -214,7 +286,7 @@ export const RowActions = ({
     (() => {
       if (entity.kind === "task") {
         return () =>
-          useInspectorStore.getState().openTask({
+          useInspectorTabsStore.getState().openTask({
             taskId: entity.entityId,
             workspaceId,
             label: name,
@@ -222,7 +294,7 @@ export const RowActions = ({
       }
       if (file && isFileDisplayable(file)) {
         return () =>
-          useInspectorStore.getState().openFile({
+          useInspectorTabsStore.getState().openFile({
             id: file.fieldId,
             entityId: file.entityId,
             label: name,
@@ -238,6 +310,14 @@ export const RowActions = ({
 
   const hasPdfConversion =
     file !== null && file.pdfFileId !== null && file.mimeType !== PDF_MIME_TYPE;
+  let exportableOcrSources: readonly OcrSource[] = [];
+  if (!isBulk && isCellContext && ocrSource && hasOcrExport(ocrSource)) {
+    exportableOcrSources = [ocrSource];
+  } else if (!isBulk && !isCellContext) {
+    exportableOcrSources = ocrSources.filter(hasOcrExport);
+  }
+  const hasDownloadVariants =
+    !isBulk && (hasPdfConversion || exportableOcrSources.length > 0);
 
   const msg: Msg = {
     downloading: t("workspaces.files.downloadAsZip"),
@@ -271,6 +351,13 @@ export const RowActions = ({
     if (file) {
       await downloadSingleFile(workspaceId, file, asPdf, msg);
     }
+  };
+
+  const handleOcrExport = async (
+    source: OcrSource,
+    format: OcrExportFormat,
+  ) => {
+    await downloadOcrExport({ workspaceId, source, format, msg });
   };
 
   const handleOpenInDesktop = async () => {
@@ -583,6 +670,41 @@ export const RowActions = ({
     event.target.value = "";
   };
 
+  const handleRunOcr = async (source: OcrSource | undefined) => {
+    if (!source || isOcrPending) {
+      return;
+    }
+
+    setIsOcrPending(true);
+    try {
+      const { outcome } = await requestManualOcr({
+        entityId: entity.entityId,
+        fieldId: source.fieldId,
+        workspaceId,
+      });
+      await queryClient.invalidateQueries({
+        queryKey: entitiesKeys.all(workspaceId),
+      });
+      stellaToast.add({
+        title: t(
+          outcome === "already_processed"
+            ? "workspaces.files.ocrAlreadyProcessed"
+            : "workspaces.files.ocrQueued",
+        ),
+        type: "success",
+      });
+    } catch (error) {
+      analytics.captureError(error);
+      stellaToast.add({
+        title: t("workspaces.files.ocrQueueFailed"),
+        description: userErrorFromThrown(error, t("errors.actionFailed")),
+        type: "error",
+      });
+    } finally {
+      setIsOcrPending(false);
+    }
+  };
+
   // Whether any selected entity has a downloadable file.
   const hasAnyFile = isBulk
     ? selectedEntities.some((e) => getFirstFile(e) !== null)
@@ -644,6 +766,43 @@ export const RowActions = ({
             <UploadIcon />
             {t("fileDetail.uploadNewVersion")}
           </MenuItem>
+        )}
+        {canRunOcr && (
+          <MenuItem
+            className="min-h-11 sm:min-h-11"
+            disabled={isOcrPending}
+            onClick={() => {
+              detached(handleRunOcr(ocrSource), "RowActions");
+            }}
+          >
+            <ScanTextIcon />
+            {t("workspaces.files.runOcr")}
+          </MenuItem>
+        )}
+        {rowOcrSources.length > 0 && (
+          <MenuSub>
+            <MenuSubTrigger className="min-h-11 sm:min-h-11">
+              <ScanTextIcon />
+              {t("workspaces.files.runOcr")}
+            </MenuSubTrigger>
+            <MenuSubPopup>
+              {rowOcrSources.map((source) => (
+                <MenuItem
+                  className="min-h-11 sm:min-h-11"
+                  disabled={isOcrPending}
+                  key={source.fieldId}
+                  onClick={() => {
+                    detached(handleRunOcr(source), "RowActions");
+                  }}
+                >
+                  <ScanTextIcon />
+                  <BidiText as="span" className="max-w-64 truncate">
+                    {source.fileName}
+                  </BidiText>
+                </MenuItem>
+              ))}
+            </MenuSubPopup>
+          </MenuSub>
         )}
         {!isBulk && cellMetadataTarget && (
           <>
@@ -718,12 +877,29 @@ export const RowActions = ({
           {t("chat.chatAbout")}
         </MenuItem>
 
+        {isCellContext && exportableOcrSources.length === 1 && (
+          <>
+            <MenuSeparator />
+            {exportableOcrSources.map((source) => (
+              <OcrExportMenuItems
+                key={source.fieldId}
+                exportStatus={source.exportStatus}
+                onDownload={(format) => {
+                  detached(handleOcrExport(source, format), "RowActions");
+                }}
+                searchablePdfLabel={t("workspaces.files.downloadSearchablePdf")}
+                textLabel={t("workspaces.files.downloadExtractedText")}
+              />
+            ))}
+          </>
+        )}
+
         {!isCellContext && (
           <>
             <MenuSeparator />
 
             {/* --- File operations --- */}
-            {hasAnyFile && (isBulk || !hasPdfConversion) && (
+            {hasAnyFile && (isBulk || !hasDownloadVariants) && (
               <MenuItem
                 onClick={() => {
                   detached(handleDownload(), "RowActions");
@@ -733,7 +909,7 @@ export const RowActions = ({
                 {t("common.download")}
               </MenuItem>
             )}
-            {!isBulk && hasPdfConversion && (
+            {hasDownloadVariants && (
               <MenuSub>
                 <MenuSubTrigger>
                   <DownloadIcon />
@@ -748,14 +924,61 @@ export const RowActions = ({
                     <DownloadIcon />
                     {t("workspaces.files.downloadOriginal")}
                   </MenuItem>
-                  <MenuItem
-                    onClick={() => {
-                      detached(handleDownload(true), "RowActions");
-                    }}
-                  >
-                    <FileOutputIcon />
-                    {t("workspaces.files.downloadPdf")}
-                  </MenuItem>
+                  {hasPdfConversion && (
+                    <MenuItem
+                      onClick={() => {
+                        detached(handleDownload(true), "RowActions");
+                      }}
+                    >
+                      <FileOutputIcon />
+                      {t("workspaces.files.downloadPdf")}
+                    </MenuItem>
+                  )}
+                  {exportableOcrSources.length === 1 &&
+                    exportableOcrSources.map((source) => (
+                      <OcrExportMenuItems
+                        key={source.fieldId}
+                        exportStatus={source.exportStatus}
+                        onDownload={(format) => {
+                          detached(
+                            handleOcrExport(source, format),
+                            "RowActions",
+                          );
+                        }}
+                        searchablePdfLabel={t(
+                          "workspaces.files.downloadSearchablePdf",
+                        )}
+                        textLabel={t("workspaces.files.downloadExtractedText")}
+                      />
+                    ))}
+                  {exportableOcrSources.length > 1 &&
+                    exportableOcrSources.map((source) => (
+                      <MenuSub key={source.fieldId}>
+                        <MenuSubTrigger>
+                          <ScanTextIcon />
+                          <BidiText as="span" className="max-w-64 truncate">
+                            {source.fileName}
+                          </BidiText>
+                        </MenuSubTrigger>
+                        <MenuSubPopup>
+                          <OcrExportMenuItems
+                            exportStatus={source.exportStatus}
+                            onDownload={(format) => {
+                              detached(
+                                handleOcrExport(source, format),
+                                "RowActions",
+                              );
+                            }}
+                            searchablePdfLabel={t(
+                              "workspaces.files.downloadSearchablePdf",
+                            )}
+                            textLabel={t(
+                              "workspaces.files.downloadExtractedText",
+                            )}
+                          />
+                        </MenuSubPopup>
+                      </MenuSub>
+                    ))}
                 </MenuSubPopup>
               </MenuSub>
             )}
@@ -980,6 +1203,44 @@ const downloadEntityAsZip = async (
 
   stellaToast.close(toastId);
   downloadFile(blobResult.value, `${name}.zip`);
+};
+
+const downloadOcrExport = async ({
+  workspaceId,
+  source,
+  format,
+  msg,
+}: {
+  workspaceId: string;
+  source: OcrSource;
+  format: OcrExportFormat;
+  msg: Msg;
+}) => {
+  const responseResult = await Result.tryPromise(
+    async () =>
+      await fetchWithTimeout(
+        apiUrl(
+          `/files/${encodeURIComponent(workspaceId)}/ocr-export/${encodeURIComponent(source.fieldId)}?format=${format}`,
+        ),
+        {
+          credentials: "include",
+          timeoutMs: 60_000,
+        },
+      ),
+  );
+  if (Result.isError(responseResult) || !responseResult.value.ok) {
+    stellaToast.add({ title: msg.failed, type: "error" });
+    return;
+  }
+
+  const blobResult = await Result.tryPromise(
+    async () => await responseResult.value.blob(),
+  );
+  if (Result.isError(blobResult)) {
+    stellaToast.add({ title: msg.failed, type: "error" });
+    return;
+  }
+  downloadFile(blobResult.value, getOcrExportFileName(source.fileName, format));
 };
 
 const downloadSingleFile = async (

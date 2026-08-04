@@ -16,12 +16,13 @@ import {
 } from "@stll/ui/components/sheet";
 import { stellaToast } from "@stll/ui/components/toast";
 
+import { SecretInput } from "@/components/secret-input";
 import { api } from "@/lib/api";
 import { detached } from "@/lib/detached";
 import { unwrapEden } from "@/lib/errors/api";
 import { userErrorFromThrown } from "@/lib/errors/user-safe";
-import { knowledgeKeys } from "@/routes/_protected.knowledge/-queries";
-import { catalogueKeys } from "@/routes/_protected.knowledge/-queries/catalogue";
+import { knowledgeKeys } from "@/lib/knowledge/queries";
+import { catalogueKeys } from "@/lib/knowledge/queries/catalogue";
 
 type CreatedConnector = {
   slug: string;
@@ -235,7 +236,7 @@ export const AddMcpServerSheet = ({
               <label className="text-sm font-medium" htmlFor="mcp-token">
                 {t("knowledge.mcp.tokenLabel")}
               </label>
-              <Input
+              <SecretInput
                 autoComplete="off"
                 autoFocus
                 className="font-mono"
@@ -248,7 +249,6 @@ export const AddMcpServerSheet = ({
                   )
                 }
                 placeholder={t("knowledge.mcp.tokenPlaceholder")}
-                type="password"
                 value={wizard.token}
               />
               <p className="text-muted-foreground text-xs">

@@ -8,11 +8,11 @@ import { stellaToast } from "@stll/ui/components/toast";
 
 import { useReviewStore } from "@/components/ai-suggestions/review-store";
 import { FacetBar } from "@/components/inspector/inspector-facet-bar";
-import type { FileTab } from "@/components/inspector/inspector-store";
+import type { FileTab } from "@/components/inspector/inspector-tabs-store";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { usePlaybooksPreviewEnabled } from "@/hooks/use-playbooks-preview";
 import { DOCX_MIME } from "@/lib/consts";
-import { entityVersionsOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/entity-versions";
+import { entityVersionsOptions } from "@/lib/workspaces/queries/entity-versions";
 
 export type Facet = NonNullable<FileTab["facet"]>;
 

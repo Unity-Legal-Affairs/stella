@@ -27,17 +27,17 @@ import {
 import { Skeleton } from "@stll/ui/components/skeleton";
 import { cn } from "@stll/ui/lib/utils";
 
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
+import { MatterRefLink } from "@/components/matter-ref-link";
 import { getFormattingLocale } from "@/i18n/i18n-store";
 import { api } from "@/lib/api";
 import { detached } from "@/lib/detached";
 import { unwrapEden } from "@/lib/errors/api";
 import { pageTitle } from "@/lib/page-title";
+import { workspacesOptions } from "@/lib/workspaces/queries";
+import { entitiesKeys } from "@/lib/workspaces/queries/entities";
 import type { TaskItem } from "@/routes/_protected.todos/-queries";
 import { myTasksOptions } from "@/routes/_protected.todos/-queries";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
-import { entitiesKeys } from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import { MatterRefLink } from "@/routes/_protected.workspaces/-components/matter-ref-link";
-import { workspacesOptions } from "@/routes/_protected.workspaces/-queries";
 
 const protectedRouteApi = getRouteApi("/_protected");
 
@@ -152,7 +152,7 @@ function MyTodosPage() {
       to: "/workspaces/$workspaceId",
       params: { workspaceId: wsId },
     });
-    useInspectorStore
+    useInspectorTabsStore
       .getState()
       .openTask({ taskId: entityId, workspaceId: wsId, isNew: true });
   };
@@ -299,7 +299,7 @@ const TaskRow = ({ task }: { task: ValidTask }) => {
     <MatterRefLink
       className="group hover:bg-muted/50 flex items-center gap-3 rounded-md px-2 py-1.5 text-sm transition-colors"
       onClick={() => {
-        useInspectorStore.getState().openTask({
+        useInspectorTabsStore.getState().openTask({
           taskId: task.id,
           workspaceId: task.workspaceId,
           label: task.name,

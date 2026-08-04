@@ -19,6 +19,9 @@ import { stellaToast } from "@stll/ui/components/toast";
 import { cn } from "@stll/ui/lib/utils";
 
 import { useReviewStore } from "@/components/ai-suggestions/review-store";
+import { DocxBrowserEditor } from "@/components/docx/docx-browser-editor";
+import type { DocxBrowserEditorActions } from "@/components/docx/docx-browser-editor";
+import { getDocxEditBlockReason } from "@/components/docx/docx-browser-editor.logic";
 import { AnonymizationFacet } from "@/components/inspector/anonymization-facet";
 import { DocumentAiSourceBar } from "@/components/inspector/document-ai-source-bar";
 import { DocxDesktopOpenButton } from "@/components/inspector/docx-desktop-open-button";
@@ -36,18 +39,24 @@ import {
   getFileTabNativePreviewKind,
   getMarkdownDraftSyncDecision,
 } from "@/components/inspector/file-tab-panel.logic";
+import { useInspectorCommandStore } from "@/components/inspector/inspector-command-store";
 import { InspectorPdfErrorFallback } from "@/components/inspector/inspector-pdf-error-fallback";
-import { useInspectorStore } from "@/components/inspector/inspector-store";
-import type { FileTab } from "@/components/inspector/inspector-store";
 import {
   InspectorTabHeader,
   MatterOriginLink,
 } from "@/components/inspector/inspector-tab-header";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
+import type { FileTab } from "@/components/inspector/inspector-tabs-store";
 import { MeasuredPdfProvider } from "@/components/inspector/measured-pdf-provider";
 import { PlaybookFacet } from "@/components/inspector/playbook-facet";
 import { SuggestionsFacet } from "@/components/inspector/suggestions-facet";
 import { VersionsFacet } from "@/components/inspector/versions-facet";
 import { MarkdownFolioEditor } from "@/components/markdown/markdown-folio-editor";
+import {
+  PeekPdfControls,
+  PeekPdfViewer,
+  PeekSuspenseFallback,
+} from "@/components/pdf/peek/peek-pdf-viewer";
 import Tooltip from "@/components/tooltip";
 import { usePlaybooksPreviewEnabled } from "@/hooks/use-playbooks-preview";
 import { useAnalytics } from "@/lib/analytics/provider";
@@ -56,20 +65,9 @@ import { DOCX_MIME, MARKDOWN_MIME, TOOLBAR_ROW_HEIGHT } from "@/lib/consts";
 import { detached } from "@/lib/detached";
 import { unwrapEden } from "@/lib/errors/api";
 import { userErrorFromThrown } from "@/lib/errors/user-safe";
+import { filesKeys, textFileOptions } from "@/lib/files/queries";
 import { toSafeId } from "@/lib/safe-id";
-import { DocxBrowserEditor } from "@/routes/_protected.workspaces/$workspaceId/-components/docx/docx-browser-editor";
-import type { DocxBrowserEditorActions } from "@/routes/_protected.workspaces/$workspaceId/-components/docx/docx-browser-editor";
-import { getDocxEditBlockReason } from "@/routes/_protected.workspaces/$workspaceId/-components/docx/docx-browser-editor.logic";
-import {
-  filesKeys,
-  textFileOptions,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/files/queries";
-import {
-  PeekPdfControls,
-  PeekPdfViewer,
-  PeekSuspenseFallback,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/peek/peek-pdf-viewer";
-import { entitiesKeys } from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
+import { entitiesKeys } from "@/lib/workspaces/queries/entities";
 
 type MatterOrigin = {
   color: string | null;
@@ -172,10 +170,10 @@ export const FileTabPanel = ({
   const analytics = useAnalytics();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const openFile = useInspectorStore((s) => s.openFile);
-  const replaceFileFieldId = useInspectorStore((s) => s.replaceFileFieldId);
-  const setFileFacet = useInspectorStore((s) => s.setFileFacet);
-  const requestDocxEdit = useInspectorStore((s) => s.requestDocxEdit);
+  const openFile = useInspectorTabsStore((s) => s.openFile);
+  const replaceFileFieldId = useInspectorTabsStore((s) => s.replaceFileFieldId);
+  const setFileFacet = useInspectorTabsStore((s) => s.setFileFacet);
+  const requestDocxEdit = useInspectorCommandStore((s) => s.requestDocxEdit);
   const playbooksEnabled = usePlaybooksPreviewEnabled();
   const isNativeDocxDisplay = tab.mimeType === DOCX_MIME;
   const nativePreviewKind = getFileTabNativePreviewKind({
@@ -817,7 +815,9 @@ export const FileTabPanel = ({
                 next.set(fieldId, scaleOffset);
                 return next;
               });
-              useInspectorStore.getState().replaceFileFieldId(tab.id, fieldId);
+              useInspectorTabsStore
+                .getState()
+                .replaceFileFieldId(tab.id, fieldId);
             }
           }}
           onScrollTopChange={handleDocxScrollTopChange}

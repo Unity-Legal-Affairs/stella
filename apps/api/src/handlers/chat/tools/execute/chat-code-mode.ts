@@ -11,7 +11,6 @@ import {
 } from "@tanstack/ai-code-mode";
 import { panic, Result } from "better-result";
 
-import type { ChatRefRegistry } from "@/api/handlers/chat/tools/execute/ref-registry";
 import { createStellaIsolateDriver } from "@/api/handlers/chat/tools/execute/sandbox/code-mode-driver";
 import { DEFAULT_SANDBOX_LIMITS } from "@/api/handlers/chat/tools/execute/sandbox/limits";
 import {
@@ -22,6 +21,7 @@ import type { RegistryReadToolName } from "@/api/handlers/chat/tools/registry-ad
 import { READ_TOOL_REF_FIELD_MAP } from "@/api/handlers/chat/tools/registry-adapter/ref-field-map";
 import { runRegistryReadTool } from "@/api/handlers/chat/tools/registry-adapter/run-registry-tool";
 import { toToolInputSchema } from "@/api/handlers/chat/tools/registry-adapter/tool-input-schema";
+import type { ChatRefRegistry } from "@/api/lib/chat/ref-registry";
 import {
   DEFAULT_MCP_TOOL_DEFINITIONS,
   getStaticMcpToolDefinition,
@@ -102,10 +102,7 @@ const CODE_MODE_RUNTIME_CONFIG = {
  * system-prompt constant (no-op runner, never invoked for prompt generation).
  */
 const buildChatReadTools = (
-  runReadTool: (
-    toolName: RegistryReadToolName,
-    args: unknown,
-  ) => Promise<unknown>,
+  runReadTool: (toolName: RegistryReadToolName, args: unknown) => unknown,
 ): CodeModeTool[] =>
   chatProjectableReadToolNames().map((toolName) => {
     const definition =
@@ -197,7 +194,6 @@ export const CHAT_CODE_MODE_SYSTEM_PROMPT: string = createCodeModeSystemPrompt({
   driver: createStellaIsolateDriver({
     concurrencyKey: "chat-code-mode-prompt",
   }),
-  // eslint-disable-next-line require-await -- prompt generation never invokes the runner; an async no-op keeps the ServerTool execute contract
-  tools: buildChatReadTools(async () => ({})),
+  tools: buildChatReadTools(() => ({})),
   ...CODE_MODE_RUNTIME_CONFIG,
 });

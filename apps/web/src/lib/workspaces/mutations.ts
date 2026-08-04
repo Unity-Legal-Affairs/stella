@@ -1,0 +1,243 @@
+import {
+  type RefetchQueryFilters,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useRouter } from "@tanstack/react-router";
+
+import { useAnalytics } from "@/lib/analytics/provider";
+import { api } from "@/lib/api";
+import { detached } from "@/lib/detached";
+import {
+  shouldRetryAPIRequest,
+  toAPIError,
+  unwrapEden,
+} from "@/lib/errors/api";
+import { toSafeId } from "@/lib/safe-id";
+import { workspacesKeys } from "@/lib/workspaces/queries";
+
+// Hardcoded in English: these are persisted in the DB and shared
+// across all organization members regardless of their locale.
+const DEFAULT_FILE_PROPERTY_NAME = "Documents";
+
+type CreateWorkspaceVars = {
+  // Omit `clientId` to create a personal matter (initially visible
+  // only to the creator). With `clientId`, `memberUserIds` may add
+  // other members; for personal matters that field is ignored.
+  clientId?: string;
+  memberUserIds?: string[];
+  name: string;
+};
+
+export const useCreateWorkspace = () => {
+  const analytics = useAnalytics();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (vars: CreateWorkspaceVars) => {
+      const id = crypto.randomUUID();
+      const response = await api.workspaces.put({
+        queryKey: workspacesKeys.all,
+        id: toSafeId<"workspace">(id),
+        ...(vars.clientId !== undefined && {
+          clientId: toSafeId<"contact">(vars.clientId),
+          ...(vars.memberUserIds && vars.memberUserIds.length > 0
+            ? { memberUserIds: vars.memberUserIds }
+            : {}),
+        }),
+        name: vars.name,
+        filePropertyName: DEFAULT_FILE_PROPERTY_NAME,
+      });
+
+      if (response.error) {
+        throw toAPIError(response.error);
+      }
+
+      return { id: toSafeId<"workspace">(id) };
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: workspacesKeys.all,
+      });
+    },
+    onError: (error) => {
+      analytics.captureError(error);
+    },
+  });
+};
+
+type UpdateWorkspaceVars = {
+  workspaceId: string;
+  name?: string;
+  clientId?: string;
+  reference?: string;
+  color?: string | null;
+  leadUserId?: string | null;
+  promote?: {
+    clientId: string;
+    memberUserIds?: string[];
+  };
+};
+
+export const workspaceUpdateInvalidationKeys = () => [workspacesKeys.all];
+
+export const workspaceUpdateRefetchFilters = (
+  workspaceId: string,
+): RefetchQueryFilters[] => [
+  { queryKey: workspacesKeys.all, type: "active" },
+  {
+    exact: true,
+    queryKey: workspacesKeys.byId(workspaceId),
+    type: "inactive",
+  },
+];
+
+export const useUpdateWorkspace = () => {
+  const analytics = useAnalytics();
+  const queryClient = useQueryClient();
+  const router = useRouter();
+
+  return useMutation({
+    mutationFn: async ({ workspaceId, ...body }: UpdateWorkspaceVars) => {
+      const { clientId, promote, ...restBody } = body;
+      const response = await api
+        .workspaces({ workspaceId: toSafeId<"workspace">(workspaceId) })
+        .post({
+          ...restBody,
+          ...(clientId !== undefined && {
+            clientId: toSafeId<"contact">(clientId),
+          }),
+          ...(promote !== undefined && {
+            promote: {
+              clientId: toSafeId<"contact">(promote.clientId),
+              ...(promote.memberUserIds && promote.memberUserIds.length > 0
+                ? { memberUserIds: promote.memberUserIds }
+                : {}),
+            },
+          }),
+          queryKey: workspacesKeys.all,
+        });
+
+      if (response.error) {
+        throw toAPIError(response.error);
+      }
+    },
+    onSuccess: async (_data, { workspaceId }) => {
+      await Promise.all(
+        workspaceUpdateInvalidationKeys().map(async (queryKey) => {
+          await queryClient.invalidateQueries({
+            queryKey,
+            refetchType: "none",
+          });
+        }),
+      );
+      await Promise.all(
+        workspaceUpdateRefetchFilters(toSafeId<"workspace">(workspaceId)).map(
+          async (filters) => {
+            await queryClient.refetchQueries(filters);
+          },
+        ),
+      );
+      // Re-run route loaders so the document title (driven by the
+      // route `head` from loaderData) reflects the renamed matter
+      // without waiting for a navigation. Query invalidation alone
+      // refreshes components but not the cached loaderData.
+      await router.invalidate();
+    },
+    onError: (error) => {
+      analytics.captureError(error);
+    },
+  });
+};
+
+type ArchiveWorkspaceVars = {
+  workspaceId: string;
+};
+
+export const useUnarchiveWorkspace = () => {
+  const analytics = useAnalytics();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ workspaceId }: ArchiveWorkspaceVars) => {
+      const response = await api
+        .workspaces({ workspaceId: toSafeId<"workspace">(workspaceId) })
+        .unarchive.post({
+          queryKey: workspacesKeys.all,
+        });
+
+      if (response.error) {
+        throw toAPIError(response.error);
+      }
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: workspacesKeys.all,
+      });
+    },
+    onError: (error) => {
+      analytics.captureError(error);
+    },
+  });
+};
+
+type DeleteWorkspaceVars = {
+  workspaceId: string;
+};
+
+export const useDeleteWorkspace = () => {
+  const analytics = useAnalytics();
+
+  return useMutation({
+    retry: shouldRetryAPIRequest,
+    mutationFn: async ({ workspaceId }: DeleteWorkspaceVars) => {
+      const response = await api
+        .workspaces({ workspaceId: toSafeId<"workspace">(workspaceId) })
+        .delete({
+          queryKey: workspacesKeys.all,
+        });
+
+      if (response.error) {
+        throw toAPIError(response.error);
+      }
+    },
+    onError: (error) => {
+      analytics.captureError(error);
+    },
+  });
+};
+
+type DuplicateWorkspaceVars = {
+  workspaceId: string;
+  includeContent: boolean;
+};
+
+export const useDuplicateWorkspace = () => {
+  const analytics = useAnalytics();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      includeContent,
+      workspaceId,
+    }: DuplicateWorkspaceVars) => {
+      const response = await api
+        .workspaces({ workspaceId: toSafeId<"workspace">(workspaceId) })
+        .duplicate.post({
+          includeContent,
+          queryKey: workspacesKeys.all,
+        });
+
+      return unwrapEden(response);
+    },
+    onSuccess: () => {
+      detached(
+        queryClient.invalidateQueries({ queryKey: workspacesKeys.all }),
+        "onSuccess",
+      );
+    },
+    onError: (error) => {
+      analytics.captureError(error);
+    },
+  });
+};

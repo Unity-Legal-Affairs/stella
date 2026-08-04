@@ -11,6 +11,7 @@ export * from "./schema/legislation";
 export * from "./schema/chat";
 export * from "./schema/docx-suggestions";
 export * from "./schema/extraction-runs";
+export * from "./schema/document-processing";
 export * from "./schema/flows";
 export * from "./schema/mcp";
 export * from "./schema/sharepoint";
@@ -18,10 +19,12 @@ export * from "./schema/files-views";
 export * from "./schema/reports";
 export * from "./schema/skills";
 export * from "./schema/style-sets";
+export * from "./schema/saved-searches";
 export * from "./schema/usage";
 export * from "./schema/relations";
 export {
   ACCOUNT_DELETION_REQUEST_STATUSES,
+  ENTITY_DELETION_CLEANUP_STATUSES,
   BILLING_STATUS,
   CHAT_TITLE_SOURCE,
   CHAT_TITLE_SOURCES,
@@ -67,6 +70,7 @@ export type {
   DocumentAst,
   EmptyAst,
   EntityKind,
+  EntityDeletionCleanupStatus,
   ExpenseCategory,
   FieldContent,
   JustificationBlock,

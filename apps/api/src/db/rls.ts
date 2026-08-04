@@ -59,7 +59,7 @@ const workspaceAccessCheck = (workspaceId: SQL) => sql`CASE
   )
 END`;
 
-const workspaceCheck = workspaceAccessCheck(sql`workspace_id`);
+export const workspaceCheck = workspaceAccessCheck(sql`workspace_id`);
 
 /** Check the row's `id` against the transaction workspace authorization.
  * Used by `workspaces`, which scopes on `id` rather than `workspace_id`. */
@@ -185,6 +185,26 @@ const chatMessageScopeCheck = sql`(
       AND ct.organization_id = (SELECT current_setting(
         '${sql.raw(SETTING_ORGANIZATION_ID)}', true
       ))
+      AND (
+        cardinality(ct.data_workspace_ids) = 0
+        OR ${workspaceArrayCheck(sql`ct.data_workspace_ids`)}
+      )
+  )
+)`;
+
+// Turn rows carry the message-like ownership columns needed for constant-time
+// tenant filters, then prove that those discriminators match the owning thread.
+// The thread join also applies the embedded-data scope, exactly as messages do.
+const chatTurnScopeCheck = sql`(
+  ${userCheck} AND
+  ${organizationCheck} AND
+  (workspace_id IS NULL OR ${workspaceCheck}) AND
+  EXISTS (
+    SELECT 1 FROM chat_threads ct
+    WHERE ct.id = chat_turns.thread_id
+      AND ct.user_id = chat_turns.user_id
+      AND ct.organization_id = chat_turns.organization_id
+      AND ct.workspace_id IS NOT DISTINCT FROM chat_turns.workspace_id
       AND (
         cardinality(ct.data_workspace_ids) = 0
         OR ${workspaceArrayCheck(sql`ct.data_workspace_ids`)}
@@ -339,6 +359,32 @@ export const orgPolicies = () => [
   }),
 ];
 
+export const orgReadOnlyPolicies = (tableName: string) => [
+  p.pgPolicy(`${tableName}_organization_select`, {
+    for: "select",
+    to: stella,
+    using: organizationCheck,
+  }),
+  p.pgPolicy(`${tableName}_no_insert`, {
+    as: "restrictive",
+    for: "insert",
+    to: stella,
+    withCheck: sql`false`,
+  }),
+  p.pgPolicy(`${tableName}_no_update`, {
+    as: "restrictive",
+    for: "update",
+    to: stella,
+    using: sql`false`,
+  }),
+  p.pgPolicy(`${tableName}_no_delete`, {
+    as: "restrictive",
+    for: "delete",
+    to: stella,
+    using: sql`false`,
+  }),
+];
+
 export const userPolicies = () => [
   p.pgPolicy("user_select", {
     for: "select",
@@ -407,6 +453,21 @@ export const globalCaseLawPolicies = () => [
     to: stella,
     using: allowAllRows,
   }),
+  p.pgPolicy("case_law_ingestion_access", {
+    for: "all",
+    to: stellaIngestion,
+    using: allowAllRows,
+    withCheck: allowAllRows,
+  }),
+];
+
+/**
+ * Corpus-upload intents contain object keys for payloads that may have been
+ * redacted. They are operational recovery records, never application data:
+ * only the ingestion role may read or mutate them; the root scheduler bypasses
+ * RLS for bounded cleanup.
+ */
+export const caseLawIngestionOnlyPolicies = () => [
   p.pgPolicy("case_law_ingestion_access", {
     for: "all",
     to: stellaIngestion,
@@ -603,6 +664,34 @@ export const workspaceViewTemplatePolicies = () => [
   }),
 ];
 
+const savedSearchCheck = sql`(
+  ${organizationCheck} AND ${userCheck}
+)`;
+
+export const savedSearchPolicies = () => [
+  p.pgPolicy("saved_search_select", {
+    for: "select",
+    to: stella,
+    using: savedSearchCheck,
+  }),
+  p.pgPolicy("saved_search_insert", {
+    for: "insert",
+    to: stella,
+    withCheck: savedSearchCheck,
+  }),
+  p.pgPolicy("saved_search_update", {
+    for: "update",
+    to: stella,
+    using: savedSearchCheck,
+    withCheck: savedSearchCheck,
+  }),
+  p.pgPolicy("saved_search_delete", {
+    for: "delete",
+    to: stella,
+    using: savedSearchCheck,
+  }),
+];
+
 const agentSkillVisibleCheck = sql`(
   ${organizationCheck} AND (scope = 'team' OR ${userCheck})
 )`;
@@ -717,6 +806,30 @@ export const chatMessagePolicies = () => [
   }),
 ];
 
+export const chatTurnPolicies = () => [
+  p.pgPolicy("chat_turn_select", {
+    for: "select",
+    to: stella,
+    using: chatTurnScopeCheck,
+  }),
+  p.pgPolicy("chat_turn_insert", {
+    for: "insert",
+    to: stella,
+    withCheck: chatTurnScopeCheck,
+  }),
+  p.pgPolicy("chat_turn_update", {
+    for: "update",
+    to: stella,
+    using: chatTurnScopeCheck,
+    withCheck: chatTurnScopeCheck,
+  }),
+  p.pgPolicy("chat_turn_delete", {
+    for: "delete",
+    to: stella,
+    using: chatTurnScopeCheck,
+  }),
+];
+
 export const chatThreadSearchDocumentPolicies = () => [
   p.pgPolicy("chat_thread_search_document_select", {
     for: "select",
@@ -745,6 +858,34 @@ export const chatThreadSearchDocumentPolicies = () => [
     using: chatDerivedThreadScopeCheck(
       sql`chat_thread_search_documents.thread_id`,
     ),
+  }),
+];
+
+export const chatThreadPreviewPassagePolicies = () => [
+  p.pgPolicy("chat_thread_preview_passage_select", {
+    for: "select",
+    to: stella,
+    using: chatDerivedThreadScopeCheck(
+      sql`chat_thread_search_preview_passages.thread_id`,
+    ),
+  }),
+  p.pgPolicy("chat_thread_preview_passage_no_insert", {
+    as: "restrictive",
+    for: "insert",
+    to: stella,
+    withCheck: sql`false`,
+  }),
+  p.pgPolicy("chat_thread_preview_passage_no_update", {
+    as: "restrictive",
+    for: "update",
+    to: stella,
+    using: sql`false`,
+  }),
+  p.pgPolicy("chat_thread_preview_passage_no_delete", {
+    as: "restrictive",
+    for: "delete",
+    to: stella,
+    using: sql`false`,
   }),
 ];
 

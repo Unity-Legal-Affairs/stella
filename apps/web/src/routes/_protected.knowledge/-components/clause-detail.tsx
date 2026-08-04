@@ -62,6 +62,8 @@ import { Textarea } from "@stll/ui/components/textarea";
 import { stellaToast } from "@stll/ui/components/toast";
 import { cn } from "@stll/ui/lib/utils";
 
+import { InlineEdit } from "@/components/inline-edit";
+import type { ClauseParagraph } from "@/components/templates/clause-editor-types";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { usePermissions } from "@/hooks/use-permissions";
 import { useFormatter } from "@/i18n/formatting-context";
@@ -72,6 +74,7 @@ import { compareByLocale } from "@/lib/collation";
 import { detached } from "@/lib/detached";
 import { unwrapEden } from "@/lib/errors/api";
 import { userErrorFromThrown, userErrorMessage } from "@/lib/errors/user-safe";
+import { clauseDetailOptions, knowledgeKeys } from "@/lib/knowledge/queries";
 import { toSafeId } from "@/lib/safe-id";
 import {
   canReviewFlushReportResolved,
@@ -87,15 +90,9 @@ import { diffClauseBodies } from "@/routes/_protected.knowledge/-components/clau
 import type { ParagraphDiff } from "@/routes/_protected.knowledge/-components/clause-diff";
 import { ClauseDiffView } from "@/routes/_protected.knowledge/-components/clause-diff-view";
 import { ClauseEditor } from "@/routes/_protected.knowledge/-components/clause-editor";
-import type { ClauseParagraph } from "@/routes/_protected.knowledge/-components/clause-editor-types";
-import { useClauseNavStore } from "@/routes/_protected.knowledge/-components/clause-nav-store";
 import { LeaveConfirmDialog } from "@/routes/_protected.knowledge/-components/leave-confirm-dialog";
 import { useClauseFieldSave } from "@/routes/_protected.knowledge/-components/use-clause-field-save";
-import {
-  clauseDetailOptions,
-  knowledgeKeys,
-} from "@/routes/_protected.knowledge/-queries";
-import { InlineEdit } from "@/routes/_protected.workspaces/$workspaceId/-components/inline-edit";
+import { useClauseNavStore } from "@/stores/knowledge/clause-nav-store";
 
 // ── Types ────────────────────────────────────────────
 

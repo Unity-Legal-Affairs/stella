@@ -280,14 +280,14 @@
       "court": "Bíróság"
     },
     "decisionNotFound": "A határozat nem található",
-    "emptyState": "Nem található határozat. Adjon meg egy forrást, és futtasson szinkronizálást a joggyakorlat importálásához.",
+    "emptyState": "Nem található határozat. Adjon meg egy forrást, és futtasson szinkronizálást az ítélkezési gyakorlat importálásához.",
     "filters": {
       "court": "Bíróság",
       "searchPlaceholder": "Keresés ügyszám alapján..."
     },
     "loadingMore": "Betöltés folyamatban...",
     "seo": {
-      "browse": "Jogesetek böngészése",
+      "browse": "Ítélkezési gyakorlat böngészése",
       "countries": "Országok",
       "courts": "Bíróságok",
       "years": "Évek"
@@ -366,6 +366,7 @@
     },
     "aiPrompt": "AI-üzenetmező",
     "aiThread": "AI-beszélgetés",
+    "analyzingSources": "Források elemzése",
     "anonymizedMode": "Anonimizált AI mód",
     "anonymizedModeDisabled": "Az anonimizált AI mód ki van kapcsolva",
     "anonymizedModeEnabled": "Az anonimizált AI mód be van kapcsolva",
@@ -401,6 +402,7 @@
     "attachFile": "Fájl csatolása",
     "attachedImage": "Csatolt kép",
     "attachment": "Melléklet",
+    "audioContent": "Generált hang",
     "cancelQueuedMessage": "Sorba állított üzenet visszavonása",
     "caseLawGreeting": "Kérdezz erről a határozatról — a teljes szöveg itt elérhető.",
     "chatAbout": "Beszúrás az AI chatbe",
@@ -447,7 +449,8 @@
       "openInFolio": "Megnyitás a szerkesztőben",
       "pickMatterPrompt": "Válassza ki azt az ügyet, amelybe a dokumentumot menteni szeretné.",
       "previewName": "Dokumentum: {name}",
-      "previewWaiting": "Várakozás a tartalomra…"
+      "previewWaiting": "Várakozás a tartalomra…",
+      "savePendingReview": "A dokumentum mentése előtt kezelje a felülvizsgálatra váró AI-javaslatokat."
     },
     "deleteThread": "Beszélgetés törlése",
     "editMode": {
@@ -474,6 +477,11 @@
     "greeting": "Min szeretne dolgozni?",
     "greetingSubtitle": "Kezdje egy üggyel, dokumentummal vagy egyszerű kérdéssel.",
     "hideThread": "Beszélgetés elrejtése",
+    "improvePrompt": "Prompt javítása",
+    "improvePromptDraftChanged": "A piszkozat megváltozott, ezért a javítás nem lett alkalmazva.",
+    "improvePromptPlainTextOnly": "A prompt javítása csak egyszerű szövegnél érhető el.",
+    "improvePromptUnavailableAnonymized": "A prompt javítása anonimizált módban nem érhető el.",
+    "improvingPrompt": "Prompt javítása…",
     "inDocument": "A dokumentumban",
     "jumpToMessage": "Ugrás ehhez az üzenethez",
     "landing": {
@@ -494,6 +502,15 @@
         "entities": "Ebben az ügyben"
       },
       "loadError": "Az entitások betöltése sikertelen"
+    },
+    "modelMode": {
+      "deepThinking": "Mély gondolkodás",
+      "deepThinkingDescription": "Összetett érvelés és elemzés",
+      "exactModels": "Konkrét modell",
+      "fastDescription": "Gyors, mindennapi kérdések",
+      "select": "Válaszmód kiválasztása",
+      "standard": "Általános",
+      "standardDescription": "A legtöbb feladathoz ideális"
     },
     "modelSelector": {
       "defaultLabel": "Alapértelmezett (csevegési szerepkör)",
@@ -529,6 +546,9 @@
     "renameThread": "Beszélgetés átnevezése",
     "resend": "Újraküldés",
     "resizeThread": "Beszélgetés méretezése",
+    "richContentLoading": "Interaktív tartalom betöltése…",
+    "richContentTitle": "Interaktív tartalom",
+    "richContentUnavailable": "Ez a tartalom nem jeleníthető meg biztonságosan.",
     "sendError": "Probléma történt az üzenet elküldésekor. Ha a hiba továbbra is fennáll, vedd fel a kapcsolatot a támogatással.",
     "sendErrorAnonymizationBlocked": "A stella nem tudta anonimizálni az egyik mellékletet, ezért semmi sem lett elküldve. Távolítsd el a fájlt, vagy küldd el az üzenetet anonimizálás nélkül.",
     "sendErrorLoopDetected": "Az AI-válasz túl sokszor ismétlődött. Próbáld újra szűkebb kéréssel.",
@@ -663,6 +683,7 @@
     },
     "unsupportedFileType": "Nem támogatott fájltípus",
     "uploadFailed": "A fájl feldolgozása sikertelen",
+    "videoContent": "Generált videó",
     "webSearch": {
       "answer": "Summary from sources",
       "answerDisclaimer": "Az alábbi nyilvános webes találatokból összeállítva. Ellenőrizze a hivatkozott források alapján.",
@@ -701,6 +722,8 @@
     "editClause": "Záradék szerkesztése",
     "editVariant": "Változat szerkesztése",
     "export": "Exportálás",
+    "exportAsCsv": "Exportálás CSV-formátumban",
+    "exportAsJson": "Exportálás JSON-formátumban",
     "exportFailed": "A záradékok exportálása nem sikerült",
     "formattingPreviewHint": "A számozás és a formázás itt csak előnézet. A létrehozott dokumentum saját listaformázást alkalmaz, ezért ne írja be kézzel a számokat.",
     "importFailed": "A záradékok importálása nem sikerült",
@@ -801,7 +824,7 @@
     "back": "Vissza",
     "cancel": "Mégse",
     "captions": "Feliratok",
-    "caseLaw": "Joggyakorlat",
+    "caseLaw": "Ítélkezési gyakorlat",
     "category": "Kategória",
     "categoryName": "Kategória neve",
     "changeColor": "Szín módosítása",
@@ -857,9 +880,18 @@
     "enterKey": "↵",
     "error": "Hiba",
     "expenses": "Kiadások",
+    "export": {
+      "citations": "Hivatkozások",
+      "failed": "Az üzenetet nem sikerült menteni",
+      "footnotes": "Lábjegyzetek",
+      "formatDocx": "Word-dokumentum (<docx>.docx</docx>)",
+      "inline": "Szövegközi",
+      "title": "Üzenet mentése"
+    },
     "filter": "Szűrő",
     "formula": "Képlet",
     "goBack": "Vissza",
+    "hideSecretValue": "Titkos érték elrejtése",
     "history": "Előzmények",
     "import": "Importálás",
     "invite": "Meghívás",
@@ -960,6 +992,7 @@
     "showAll": "Az összes megjelenítése",
     "showLess": "Kevesebb megjelenítése",
     "showMore": "Több megjelenítése",
+    "showSecretValue": "Titkos érték megjelenítése",
     "signOut": "Kijelentkezés",
     "somethingWentWrong": "Hiba történt",
     "sort": "Rendezés",
@@ -991,7 +1024,6 @@
     "allow": "Engedélyezés",
     "completeSetup": "Beállítás befejezése",
     "defaultClientName": "Egy alkalmazás",
-    "deny": "Elutasítás",
     "description": "A(z) {clientName} hozzá szeretne férni a stella munkaterületéhez",
     "error": "Hiba történt. Kérjük, próbálja újra.",
     "missingJurisdictions": "A stella-szervezete még nem állította be a praxis joghatóságait. Egyes joghatóságfüggő eszközök addig nem lesznek elérhetők, amíg be nem fejezi a beállítást.",
@@ -1203,6 +1235,7 @@
       "aiConfigProviderValidationFailed": "Az AI-szolgáltató elutasította a beállítást. Ellenőrizze az API-kulcsot és a modellt.",
       "deeplKeyRejected": "A mentett DeepL-kulcsot a szolgáltató elutasította. Cserélje le a szervezet beállításaiban.",
       "deeplQuotaExceeded": "A szervezet DeepL-karakterkerete elfogyott.",
+      "disposableEmailNotAllowed": "Az ideiglenes e-mail-címek nem engedélyezettek. Használjon állandó e-mail-címet.",
       "forbidden": "Nincs jogosultsága ehhez a művelethez.",
       "internalServerError": "Hiba történt. Próbálja újra.",
       "legalSourceEntityLimitReached": "Ez az ügy elérte az entitások korlátját, ezért a dokumentum nem hozható létre.",
@@ -1711,6 +1744,10 @@
       "description": "Telepíts SKILL.md-csomagokat, amelyek speciális módszereket és csak olvasható erőforrásokat adnak a chathez.",
       "disableSkill": "Készség kikapcsolása",
       "disabled": "Kikapcsolva",
+      "discoverSkills": "Készségek keresése",
+      "discoveredSkills": "{count, plural, one {# készség található} other {# készség található}}",
+      "discoveryEmpty": "Ebben a tárolóban vagy mappában nem található készség.",
+      "discoverySkippedInvalid": "{count, plural, one {# érvénytelen készség kihagyva} other {# érvénytelen készség kihagyva}}",
       "dropFile": "Húzd ide a SKILL.md vagy .zip fájlt",
       "editSkill": "Készség szerkesztése",
       "emptyDescription": "Tölts fel egy SKILL.md fájlt, egy tömörített készségmappát, vagy importálj egy nyilvános GitHub-készség URL-t.",
@@ -1741,9 +1778,16 @@
       "generateTitle": "Készség generálása AI-val",
       "generating": "Generálás…",
       "howItRuns": "How it runs",
-      "importHelp": "Illessz be egy közvetlen SKILL.md URL-t, GitHub-fájl URL-t vagy olyan GitHub-mappa URL-t, amely tartalmazza a SKILL.md fájlt.",
+      "importFailureFetch": "A készség forrását nem sikerült betölteni.",
+      "importFailureIntegrity": "A készség forrása a felderítés után megváltozott. Ellenőrizd újra.",
+      "importFailureLimit": "Elérted a készségek maximális számát.",
+      "importFailureNameConflict": "Már létezik ilyen nevű készség.",
+      "importHelp": "Illeszd be egy nyilvános GitHub-tároló, mappa vagy SKILL.md fájl URL-jét. Telepítés előtt ellenőrizd a megtalált készségeket.",
+      "importPartial": "{installedCount, plural, one {{installed} importálva} other {{installed} importálva}}; {failedCount, plural, one {{failed} sikertelen} other {{failed} sikertelen}}.",
+      "importSelected": "Kijelöltek importálása ({count})",
       "importSkill": "Importálás URL-ből",
       "importTitle": "Készség importálása",
+      "importedSkills": "{count, plural, one {# készség importálva} other {# készség importálva}}",
       "invalidPath": "Az útvonal csak kisbetűket, számjegyeket, pontokat, kötőjeleket vagy alulvonásokat tartalmazhat",
       "license": "Licenc: {license}",
       "newFile": "Új fájl",
@@ -1757,6 +1801,7 @@
       "scopeTeam": "Mindenki a csapatban",
       "selectFileHint": "Select a file from the list to open it in the editor panel on the right.",
       "selectedFile": "Kiválasztva: {name}",
+      "selectionLimit": "Egyszerre legfeljebb {count} készséget válassz ki.",
       "sourceUpload": "Feltöltve",
       "sourceUrl": "Nyilvános URL",
       "unsavedChanges": "Nem mentett módosítások – elveti?",
@@ -1985,7 +2030,7 @@
     },
     "sections": {
       "caseLaw": {
-        "description": "Bírósági határozatok és joggyakorlati adatbázis"
+        "description": "Bírósági határozatok és ítélkezési gyakorlat adatbázisa"
       },
       "clauses": {
         "description": "Újrafelhasználható mintakikötések"
@@ -2085,8 +2130,21 @@
     "recents": "Legutóbbiak",
     "search": "Keresés",
     "shortcutCategories": {
-      "navigation": "Navigáció"
+      "help": "Súgó",
+      "navigation": "Navigáció",
+      "review": "Dokumentum áttekintése"
     },
+    "shortcutsDialog": {
+      "collision": "Már hozzárendelve ehhez: {label}",
+      "description": "Böngéssze a billentyűparancsokat a gyorsabb munkához.",
+      "editShortcut": "Billentyűparancs módosítása",
+      "invalidBinding": "Adjon hozzá egy nem módosító billentyűt",
+      "notRebindable": "Ez a billentyűparancs nem módosítható",
+      "pressKeys": "Nyomja le az új billentyűket…",
+      "resetToDefault": "Visszaállítás alapértelmezettre",
+      "title": "Billentyűparancsok"
+    },
+    "showShortcuts": "Billentyűparancsok megjelenítése",
     "sidebar": "Oldalsáv",
     "sidebarDescription": "Megjeleníti a mobil oldalsávot.",
     "templates": "Sablonok",
@@ -2309,11 +2367,25 @@
     "settingsDescription": "Szervezet nevének és slugjának szerkesztése",
     "switchOrganization": "Szervezet váltása"
   },
+  "routeError": {
+    "backToMatters": "Vissza az ügyekhez",
+    "copyReference": "Hibahivatkozás másolása",
+    "descriptionAdministrator": "Próbálja újra. Ha a probléma továbbra is fennáll, térjen vissza az ügyeihez, vagy forduljon rendszergazdájához az alábbi hivatkozással.",
+    "descriptionNone": "Próbálja újra. Ha a probléma továbbra is fennáll, térjen vissza az ügyeihez.",
+    "descriptionReport": "Próbálja újra. Ha a probléma továbbra is fennáll, térjen vissza az ügyeihez, vagy jelentse a problémát az alábbi hivatkozással.",
+    "reference": "Hibahivatkozás",
+    "reportBody": "Hibahivatkozás: {reference}\n\nMi történt?\n",
+    "reportProblem": "Probléma jelentése",
+    "reportSubject": "stella hiba: {reference}",
+    "title": "Ezt az oldalt nem sikerült megnyitni"
+  },
   "search": {
     "aiRefine": "Keresés javítása AI-val",
     "continueInChat": "Folytatás chatben",
     "dateFrom": "Mettől",
     "dateTo": "Meddig",
+    "deleteSearchDescription": "Ezzel véglegesen törli ezt: \"<bdi>{name}</bdi>\".",
+    "deleteSearchTitle": "Mentett keresés törlése",
     "editedBy": "Szerkesztette",
     "emptyState": "Kezdjen el gépelni az összes ügy közötti kereséshez.",
     "escKey": "ESC",
@@ -2330,9 +2402,16 @@
     "mimeType": "Fájltípus",
     "noResults": "Nincs találat erre: „{query}”.",
     "placeholder": "Keresés az összes ügyben...",
+    "previewUnavailable": "Az előnézet nem érhető el",
     "recentSearches": "Legutóbbi keresések",
     "recentlyOpenedFiles": "Legutóbb megnyitott fájlok",
+    "renameSearchTitle": "Mentett keresés átnevezése",
     "resultCount": "{count, plural, one {# találat} other {# találat}}",
+    "saveSearch": "Keresés mentése",
+    "saveSearchNamePlaceholder": "pl. Legutóbbi PDF-ek",
+    "saveSearchTitle": "Keresés mentése",
+    "savedSearches": "Mentett keresések",
+    "savedSearchesEmpty": "Mentse el a keresést későbbi használatra.",
     "summaryAction": "Legjobb találatok összefoglalása",
     "summaryError": "Az összefoglaló nem érhető el",
     "summaryLoading": "Találatok összefoglalása...",
@@ -2355,7 +2434,7 @@
   "settings": {
     "account": {
       "beta": "Béta funkciók",
-      "betaCaseLawDescription": "Nyilvános joggyakorlat-keresés és -olvasó megjelenítése az oldalsávban",
+      "betaCaseLawDescription": "A nyilvános ítélkezési gyakorlat keresőjének és olvasójának megjelenítése az oldalsávban",
       "betaDescription": "Próbálja ki a még fejlesztés alatt álló funkciókat",
       "betaTimeBillingDescription": "Időkövetés, számlák és költségek megjelenítése",
       "confirmDelete": "Fiók törlésének megerősítése",
@@ -2496,6 +2575,12 @@
       "auditLogsTo": "Záró dátum",
       "auditLogsUserId": "Felhasználói azonosító",
       "auditLogsUserIdPlaceholder": "Szűrés felhasználói azonosító alapján",
+      "documentProcessing": {
+        "description": "Automatikusan felismeri a szkennelt PDF-ek szövegét, hogy a tartalmuk kereshető legyen.",
+        "title": "Dokumentumszöveg-felismerés",
+        "toggleLabel": "Szöveg automatikus felismerése szkennelt PDF-ekben",
+        "updated": "A dokumentumszöveg-felismerés beállítása frissítve"
+      },
       "documentTypes": {
         "addPlaceholder": "Add a document type (e.g. Employment Agreement)",
         "deleteFailed": "Couldn't delete document type",
@@ -3079,6 +3164,7 @@
       "copyOption": "Másolás (eredeti megtartása)",
       "description": "\"{name}\" másolása vagy áthelyezése másik ügyiratba",
       "descriptionCount": "{count, plural, one {# elem} other {# elem}} másolása vagy áthelyezése másik ügyiratba",
+      "goToMatter": "Ugrás az ügyirathoz",
       "menuItem": "Másolás/Áthelyezés ügyiratba",
       "moveButton": "Áthelyezés",
       "moveOption": "Áthelyezés (eredeti törlése)",
@@ -3165,12 +3251,18 @@
         "updateRequiredTitle": "stella desktop frissítése"
       },
       "downloadAsZip": ".zip fájl letöltése",
+      "downloadExtractedText": "Kinyert szöveg (.txt)",
       "downloadOriginal": "Eredeti fájl",
       "downloadPdf": "PDF",
+      "downloadSearchablePdf": "Kereshető PDF",
       "maxEntitiesReached": "Elérte a maximális entitásszámot",
+      "ocrAlreadyProcessed": "A szövegfelismerés már befejeződött",
+      "ocrQueueFailed": "A szövegfelismerést nem sikerült várólistára tenni",
+      "ocrQueued": "A szövegfelismerés bekerült a következő OCR-kötegbe",
       "rateLimited": "Sebességkorlát; folytatás {seconds, number} mp múlva",
       "renamedToAvoidConflicts": "{count, plural, one {# fájl átnevezve az ütközések elkerülése érdekében} other {# fájl átnevezve az ütközések elkerülése érdekében}}",
       "retryFailed": "{count, plural, one {# fájl} other {# fájl}} újrapróbálása",
+      "runOcr": "OCR sorba állítása",
       "uploadedPartially": "{failed, plural, one {# fájl} other {# fájl}} feltöltése sikertelen a {total, number} fájlból",
       "uploadedSuccessfully": "Fájlok sikeresen feltöltve",
       "uploading": "Fájlok feltöltése",
@@ -3335,6 +3427,92 @@
       "equals": "Egyenlő"
     },
     "overview": {
+      "activity": {
+        "actorActions": {
+          "added": "Hozzáadta",
+          "cancelled": "Megszakította",
+          "created": "Létrehozta",
+          "deleted": "Törölte",
+          "executed": "Futtatta",
+          "removed": "Eltávolította",
+          "reviewed": "Áttekintette",
+          "updated": "Frissítette"
+        },
+        "approvals": {
+          "approved": "Jóváhagyás megadva",
+          "notRequired": "Nem szükséges",
+          "pending": "Jóváhagyás függőben",
+          "rejected": "Jóváhagyás elutasítva"
+        },
+        "automatedService": "Automatizált szolgáltatás",
+        "deletedUser": "Törölt felhasználó",
+        "details": {
+          "actor": "Végrehajtotta",
+          "approval": "Jóváhagyás",
+          "approvedBy": "Jóváhagyta",
+          "channel": "Csatorna",
+          "dateTime": "Dátum és idő",
+          "direct": "Közvetlen tevékenység",
+          "eventId": "Eseményazonosító",
+          "notAvailable": "Nem érhető el",
+          "openTarget": "Elem megnyitása",
+          "runId": "Futásazonosító",
+          "system": "Rendszertevékenység",
+          "target": "Cél",
+          "title": "Tevékenység részletei",
+          "trigger": "Kezdeményezte",
+          "webhook": "Webes esemény"
+        },
+        "empty": "Ebben az ügyben még nincs tevékenység.",
+        "filterLabel": "Tevékenység szűrése",
+        "filters": {
+          "all": "Minden tevékenység",
+          "automation": "Automatizálás",
+          "court": "Bíróság",
+          "documents": "Dokumentumok",
+          "matter": "Ügy",
+          "tasks": "Napirend",
+          "team": "Csapat"
+        },
+        "list": {
+          "actor": "Szereplő",
+          "dateTime": "Dátum és idő",
+          "event": "Esemény",
+          "provenance": "Eredet"
+        },
+        "loadEarlier": "Korábbiak betöltése",
+        "loading": "Betöltés…",
+        "provenance": {
+          "connected": "Csatlakoztatott hozzáféréssel",
+          "connectedBy": "Csatlakoztatta: {user}",
+          "delegated": "Másik ügynök delegálta",
+          "delegatedBy": "Egy ügynök delegálta {user} számára",
+          "dispatched": "Felhasználó indította",
+          "dispatchedBy": "{user} indította",
+          "dispatchedInChatBy": "{user} indította a csevegésben",
+          "scheduled": "Ütemezés szerint indult",
+          "scheduledBy": "{user} ütemezett automatizálása"
+        },
+        "runCount": "{count, plural, one {# tevékenység} other {# tevékenység}}",
+        "sources": {
+          "chat": "Csevegés",
+          "flow": "Munkafolyamat",
+          "mcp": "Csatlakoztatott eszköz"
+        },
+        "targets": {
+          "automation": "automatizálás",
+          "court": "bírósági bejegyzés",
+          "document": "dokumentum",
+          "matter": "ügy",
+          "task": "napirendi elem",
+          "team": "ügycsapat"
+        },
+        "title": "Tevékenység",
+        "views": {
+          "list": "Listanézet",
+          "timeline": "Idővonalnézet"
+        }
+      },
       "atAGlance": "Áttekintés",
       "edited": "szerkesztette",
       "getStarted": "Kezdje el dokumentumok feltöltésével vagy az első mappa létrehozásával.",
@@ -3592,7 +3770,7 @@
       "exportXlsx": "XLSX exportálása",
       "fields": "Mezők:",
       "fieldsSelected": "{count, plural, one {# kiválasztva} other {# kiválasztva}}",
-      "filter": "Filter",
+      "filter": "Szűrés",
       "filterByPlaceholder": "Filter by…",
       "filtersWithCount": "{count, plural, one {# filter} other {# filters}}",
       "groupBy": "Csoportosítás:",

@@ -27,6 +27,7 @@ import type { AuditRecorder } from "@/api/lib/audit-log";
 import { AUDIT_ACTION, AUDIT_RESOURCE_TYPE } from "@/api/lib/audit-log";
 import type { SafeId } from "@/api/lib/branded-types";
 import { createSafeId } from "@/api/lib/branded-types";
+import { proveTextOnlyPersistedChatMessageContent } from "@/api/lib/chat/persisted-message-content";
 import { tSafeId, tUserId } from "@/api/lib/custom-schema";
 import { LIMITS } from "@/api/lib/limits";
 import {
@@ -54,6 +55,10 @@ const SEARCH_CONTEXT_CHARS_PER_RESULT = 3000;
 const SEARCH_CONTEXT_TOTAL_CHARS = 14_000;
 const SEARCH_REFINE_MAX_ATTEMPTS = 3;
 const SEARCH_SUMMARY_CITATION_LIMIT = 5;
+const SEARCH_SUMMARY_PROVENANCE = {
+  type: "search-summary",
+  version: 1,
+} as const;
 const CITABLE_SEARCH_RESULT_TYPES = [
   "matter",
   "contact",
@@ -672,13 +677,14 @@ export const createSearchSummaryChatThread = async ({
         workspaceId: null,
         userId,
         role: "assistant",
-        content: {
-          version: 1,
-          data: [
-            { type: "text", text: assistantText },
-            ...citedContexts.flatMap(toChatSourceParts),
-          ],
-        },
+        content: proveTextOnlyPersistedChatMessageContent({
+          version: 2,
+          data: [{ type: "text", content: assistantText }],
+          metadata: {
+            serverProvenance: SEARCH_SUMMARY_PROVENANCE,
+            sourceDocuments: citedContexts.flatMap(toChatSourceDocuments),
+          },
+        }),
         createdAt: new Date(now.getTime() + 1),
       },
     ]);
@@ -841,7 +847,7 @@ const uniqueWorkspaceIds = (
   ids: readonly SafeId<"workspace">[],
 ): SafeId<"workspace">[] => Array.from(new Set(ids));
 
-const toChatSourceParts = (context: SearchResultContext) => {
+const toChatSourceDocuments = (context: SearchResultContext) => {
   const hit = context.hit;
   if (
     hit.type === "case-law" ||
@@ -853,14 +859,11 @@ const toChatSourceParts = (context: SearchResultContext) => {
 
   return [
     {
-      type: "data-stella-source-document" as const,
-      data: {
-        entityId: hit.entityId,
-        kind: hit.type,
-        mimeType: hit.mimeType,
-        title: hit.title,
-        workspaceId: hit.workspaceId,
-      },
+      entityId: hit.entityId,
+      kind: hit.type,
+      mimeType: hit.mimeType,
+      title: hit.title,
+      workspaceId: hit.workspaceId,
     },
   ];
 };

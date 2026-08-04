@@ -1,28 +1,25 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
+import releaseDates from "../data/changelog-release-dates.json";
+import { getReleaseKind } from "./changelog-release";
+
 export type ChangelogRelease = {
   description: string;
   displayName: string;
   heading: string | null;
+  /** ISO publication timestamp, or null when the release has no date entry. */
+  publishedAt: string | null;
   slug: string;
   tagName: string;
 };
 
+// Widen the literal-keyed JSON import so lookups by arbitrary tag are typed as
+// possibly absent (a new release lands before its date entry is committed).
+const RELEASE_DATES: Partial<Record<string, string>> = releaseDates;
+
 const CHANGELOG_DIR = resolveRepoPath("docs", "changelog");
 const STABLE_CHANGELOG_FILE_PATTERN = /^v\d+\.\d+\.\d+\.md$/u;
-
-export type ReleaseKind = "major" | "minor" | "patch";
-
-export const getReleaseKind = (tagName: string): ReleaseKind => {
-  const [, minor, patch] = tagName.replace(/^v/u, "").split(".").map(Number);
-
-  if (patch !== 0) {
-    return "patch";
-  }
-
-  return minor === 0 ? "major" : "minor";
-};
 
 export const releaseAnchorId = (tagName: string) =>
   tagName
@@ -63,6 +60,7 @@ const readRelease = (tagName: string): ChangelogRelease => {
     description,
     displayName: formatReleaseName(tagName),
     heading,
+    publishedAt: RELEASE_DATES[tagName] ?? null,
     slug: releaseAnchorId(tagName),
     tagName,
   };

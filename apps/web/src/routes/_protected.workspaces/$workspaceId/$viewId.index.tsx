@@ -1,20 +1,26 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 
-import { ensureRouteQueryData } from "@/lib/react-query";
+import {
+  ensureRouteInfiniteQueryData,
+  ensureRouteQueryData,
+} from "@/lib/react-query";
 import type { ViewLayout, ViewLayoutType, WorkspaceView } from "@/lib/types";
+import {
+  overviewActivityOptions,
+  overviewOptions,
+} from "@/lib/workspaces/queries";
+import {
+  filesystemEntitiesOptions,
+  visibleEntityFieldIds,
+} from "@/lib/workspaces/queries/entities";
+import { propertiesOptions } from "@/lib/workspaces/queries/properties";
+import { viewsOptions } from "@/lib/workspaces/queries/views";
 import { CalendarView } from "@/routes/_protected.workspaces/$workspaceId/-components/calendar/calendar-view";
 import { FilesystemView } from "@/routes/_protected.workspaces/$workspaceId/-components/filesystem/tree-view";
 import { KanbanView } from "@/routes/_protected.workspaces/$workspaceId/-components/kanban/kanban-view";
 import { OverviewView } from "@/routes/_protected.workspaces/$workspaceId/-components/overview-view";
 import { TableLayout } from "@/routes/_protected.workspaces/$workspaceId/-components/table/table-layout";
-import {
-  filesystemEntitiesOptions,
-  visibleEntityFieldIds,
-} from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import { propertiesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
-import { viewsOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/views";
-import { overviewOptions } from "@/routes/_protected.workspaces/-queries";
 
 type TableWorkspaceView = WorkspaceView & {
   layout: Extract<ViewLayout, { type: "table" }>;
@@ -72,7 +78,17 @@ export const Route = createFileRoute(
         await ensureRouteQueryData(queryClient, propertiesOptions(workspaceId));
       },
       overview: async () => {
-        await ensureRouteQueryData(queryClient, overviewOptions(workspaceId));
+        await Promise.all([
+          ensureRouteQueryData(queryClient, overviewOptions(workspaceId)),
+          ensureRouteInfiniteQueryData(
+            queryClient,
+            overviewActivityOptions({
+              activeOrganizationId: context.user.activeOrganizationId,
+              category: "all",
+              workspaceId,
+            }),
+          ),
+        ]);
       },
       filesystem: async () => {
         if (!isFilesystemView(activeView)) {

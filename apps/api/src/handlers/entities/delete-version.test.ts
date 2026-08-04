@@ -84,6 +84,19 @@ describe("delete-version chain-of-custody guard", () => {
     ).toBeGreaterThan(txStart);
   });
 
+  test("refuses a tombstone while that version is dispatched to OCR", () => {
+    const source = readFileSync(
+      nodePath.join(import.meta.dir, "delete-version.ts"),
+      "utf-8",
+    );
+
+    expect(source).toContain("documentProcessingRuns.entityVersionId");
+    expect(source).toContain('documentProcessingRuns.status, "running"');
+    expect(source).toContain(
+      "Wait for document processing to finish before deleting",
+    );
+  });
+
   test("locks each session kind before the entity row (finalize's order)", () => {
     // Lock-order hierarchy (issue #1139): docx-edit advisory lock ->
     // edit-session rows -> entities row. This handler takes no advisory lock,
@@ -233,30 +246,18 @@ describe("delete-version chain-of-custody guard", () => {
             "Workspace-deletion GC: a workspace-wide file-ref sweep that must include tombstoned versions so their bytes are also cleaned up.",
         },
       ],
-      "handlers/entities/version-utils.ts": [
+      "handlers/workspaces/read-overview-activity.ts": [
+        {
+          anchor: "inArray(entityVersions.id, versionIds)",
+          reason:
+            "Historical activity target resolution reads only version ID and owning entity ID across tombstones; it never returns withdrawn version content.",
+        },
+      ],
+      "lib/entity-versions/version-utils.ts": [
         {
           anchor: "max(entityVersions.versionNumber)",
           reason:
             "Version-number allocator (nextEntityVersionNumber): MAX(versionNumber) deliberately spans tombstones so a new version never reuses a withdrawn number; reads versionNumber only, no content.",
-        },
-      ],
-      "handlers/entities/upload-version.ts": [
-        {
-          anchor: "currentVersion.fields.find",
-          reason:
-            "New-version upload: reads the current version's fields to carry them forward. currentVersionId is invariant-live (tombstoning promotes it off a withdrawn row).",
-        },
-        {
-          anchor: "freshCurrentVersion.fields.find",
-          reason:
-            "Same carry-forward read, re-taken under the entity-cap lock; currentVersionId is invariant-live.",
-        },
-      ],
-      "handlers/uploads/entity-version.ts": [
-        {
-          anchor: "freshCurrentVersionId",
-          reason:
-            "Presigned-upload finalize: reads the locked current version's fields to carry forward into a new version; currentVersionId is invariant-live.",
         },
       ],
       "handlers/entities/finalize-desktop-edit-session.ts": [
@@ -356,7 +357,10 @@ describe("delete-version chain-of-custody guard", () => {
     // and require deletedAt IS NULL, so a tombstoned base version is never
     // served regardless of session state (class guard for the cascade above).
     const source = readFileSync(
-      nodePath.join(import.meta.dir, "desktop-edit-session-utils.ts"),
+      nodePath.join(
+        API_SRC,
+        "lib/entity-versions/desktop-edit-session-utils.ts",
+      ),
       "utf-8",
     );
 
@@ -401,7 +405,7 @@ describe("delete-version chain-of-custody guard", () => {
       string,
       { anchor: string; reason: string }
     > = {
-      "handlers/entities/compute-version-diff.ts": {
+      "lib/entity-versions/compute-version-diff.ts": {
         anchor: "diffWordsAdded",
         reason:
           "Derived diff-stats cache write on a freshly-finalized version; landing on a concurrently-tombstoned row is harmless because tombstoned versions are never read.",
@@ -450,7 +454,7 @@ describe("delete-version chain-of-custody guard", () => {
     // so the collision is a silent duplicate). Every writer must allocate via
     // nextEntityVersionNumber (MAX over ALL versions, including tombstoned).
     const utils = readFileSync(
-      nodePath.join(API_SRC, "handlers/entities/version-utils.ts"),
+      nodePath.join(API_SRC, "lib/entity-versions/version-utils.ts"),
       "utf-8",
     );
     const allocator = utils.slice(

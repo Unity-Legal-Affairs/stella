@@ -16,6 +16,7 @@ import { DatabaseError, HandlerError } from "@/api/lib/errors/tagged-errors";
 import { PG_ERROR, pgErrorFields } from "@/api/lib/pg-error";
 
 type ReadThreadValidationStateProps = {
+  messageId: SafeId<"chatMessage">;
   organizationId: SafeId<"organization">;
   safeDb: SafeDb;
   threadId: SafeId<"chatThread">;
@@ -24,10 +25,15 @@ type ReadThreadValidationStateProps = {
 };
 
 type ThreadValidationState = {
+  persistedMessage: {
+    content: PersistedChatMessageContent;
+    role: ChatMessage["role"];
+  } | null;
   webSearchEnabled: boolean;
 };
 
 export const readThreadValidationState = async ({
+  messageId,
   organizationId,
   safeDb,
   threadId,
@@ -49,12 +55,18 @@ export const readThreadValidationState = async ({
             workspaceId: true,
             webSearchEnabled: true,
           },
+          with: {
+            messages: {
+              where: { id: { eq: messageId } },
+              columns: { content: true, role: true },
+            },
+          },
         }),
       ),
     );
 
     if (!thread) {
-      return Result.ok({ webSearchEnabled: false });
+      return Result.ok({ persistedMessage: null, webSearchEnabled: false });
     }
 
     const persistedWorkspaceId = thread.workspaceId ?? null;
@@ -67,7 +79,17 @@ export const readThreadValidationState = async ({
       );
     }
 
-    return Result.ok({ webSearchEnabled: thread.webSearchEnabled });
+    const persistedMessage = thread.messages.at(0);
+    return Result.ok({
+      persistedMessage:
+        persistedMessage === undefined
+          ? null
+          : {
+              content: persistedMessage.content,
+              role: persistedMessage.role,
+            },
+      webSearchEnabled: thread.webSearchEnabled,
+    });
   });
 
 type ChatThreadRecord = {
@@ -85,6 +107,13 @@ type ChatThreadRecord = {
 };
 
 type LoadThreadProps = {
+  /**
+   * Server-derived workspace scope inherited by a newly created draft chat.
+   * This is deliberately not populated from the request: a draft can place
+   * its origin document snapshot in the model context before its first
+   * message is durable, so its thread must start with the origin's RLS scope.
+   */
+  initialDataWorkspaceIds: readonly SafeId<"workspace">[];
   initialContextMatterIds: SafeId<"workspace">[];
   isAnonymized: boolean;
   organizationId: SafeId<"organization">;
@@ -123,6 +152,7 @@ type LoadThreadAttemptProps = LoadThreadProps & {
 
 const loadThreadAttempt = async ({
   claimAttempt,
+  initialDataWorkspaceIds,
   initialContextMatterIds,
   isAnonymized,
   organizationId,
@@ -254,6 +284,7 @@ const loadThreadAttempt = async ({
       }
       return await loadThreadAttempt({
         claimAttempt: claimAttempt + 1,
+        initialDataWorkspaceIds,
         initialContextMatterIds,
         isAnonymized,
         organizationId,
@@ -318,9 +349,13 @@ const loadThreadAttempt = async ({
       return Result.ok(existingResult.value);
     }
 
-    const initialDataWorkspaceIds: SafeId<"workspace">[] = workspaceId
-      ? [workspaceId]
-      : [];
+    const initialThreadDataWorkspaceIds = [...initialDataWorkspaceIds];
+    if (
+      workspaceId !== null &&
+      !initialThreadDataWorkspaceIds.includes(workspaceId)
+    ) {
+      initialThreadDataWorkspaceIds.unshift(workspaceId);
+    }
     const rollbackToken = Bun.randomUUIDv7();
 
     const insertResult = await safeDb(async (tx) => {
@@ -337,7 +372,7 @@ const loadThreadAttempt = async ({
         // embedded workspace data; subsequent messages widen
         // this set via expandThreadDataScope when they reference
         // workspace assets (mentions, source-document parts).
-        dataWorkspaceIds: initialDataWorkspaceIds,
+        dataWorkspaceIds: initialThreadDataWorkspaceIds,
       });
 
       await recordAuditEvent(tx, {
@@ -403,7 +438,7 @@ const loadThreadAttempt = async ({
         id: threadId,
         workspaceId,
         contextMatterIds: initialContextMatterIds,
-        dataWorkspaceIds: initialDataWorkspaceIds,
+        dataWorkspaceIds: initialThreadDataWorkspaceIds,
         webSearchEnabled: false,
         chatModel: null,
         messages: [],

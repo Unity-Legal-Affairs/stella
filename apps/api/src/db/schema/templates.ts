@@ -1,8 +1,11 @@
+import { sql } from "drizzle-orm";
+
 import {
   ENTITY_KINDS,
   bytea,
   jsonb,
   orgPolicies,
+  orgReadOnlyPolicies,
   organization,
   p,
   pUuid,
@@ -12,10 +15,13 @@ import {
   tsvector,
   user,
   wsPolicies,
+  wsOrganizationPolicies,
+  wsOrganizationReadOnlyPolicies,
+  timestamptz,
 } from "./common";
-import type { AnyPgColumn, TemplateManifest } from "./common";
+import type { AnyPgColumn, SafeId, TemplateManifest } from "./common";
 import { contacts, workspaces } from "./contacts";
-import { TEMPLATE_KINDS, entities } from "./entities";
+import { TEMPLATE_KINDS, entities, entityVersions, fields } from "./entities";
 
 export const templateCategories = p.pgTable(
   "template_categories",
@@ -33,8 +39,8 @@ export const templateCategories = p.pgTable(
     name: p.varchar({ length: 256 }).notNull(),
     description: p.text(),
     sortOrder: p.integer("sort_order").notNull().default(0),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
-    updatedAt: p.timestamp("updated_at").notNull().defaultNow(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at").notNull().defaultNow(),
   },
   (table) => [
     p.index("template_categories_organization_id_idx").on(table.organizationId),
@@ -76,13 +82,13 @@ export const templates = p.pgTable(
     whenToUse: p.text("when_to_use"),
     whenNotToUse: p.text("when_not_to_use"),
     useCount: p.integer("use_count").notNull().default(0),
-    lastUsedAt: p.timestamp("last_used_at"),
+    lastUsedAt: timestamptz("last_used_at"),
     createdBy: p
       .text("created_by")
       .notNull()
       .references(() => user.id, { onDelete: "restrict" }),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
-    updatedAt: p.timestamp("updated_at").notNull().defaultNow(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at").notNull().defaultNow(),
   },
   (table) => [
     p.index("templates_organization_id_idx").on(table.organizationId),
@@ -100,6 +106,86 @@ export const templates = p.pgTable(
   ],
 );
 
+export type TemplatePersistenceResult =
+  | {
+      action: "create_document";
+      entityId: SafeId<"entity">;
+      entityVersionId: SafeId<"entityVersion">;
+      fileName: string;
+      unmatchedPlaceholders: string[];
+      unusedValues: string[];
+    }
+  | {
+      action: "create_version";
+      entityId: SafeId<"entity">;
+      entityVersionId: SafeId<"entityVersion">;
+      fileName: string;
+      unmatchedPlaceholders: string[];
+      unusedValues: string[];
+      versionNumber: number;
+    };
+
+export const TEMPLATE_PERSISTENCE_REQUEST_STATUS = {
+  COMPLETED: "completed",
+  PENDING: "pending",
+} as const;
+
+export type TemplatePersistenceRequestStatus =
+  (typeof TEMPLATE_PERSISTENCE_REQUEST_STATUS)[keyof typeof TEMPLATE_PERSISTENCE_REQUEST_STATUS];
+
+/** Durable receipt that makes save_filled_template retries idempotent. */
+export const templatePersistenceRequests = p.pgTable(
+  "template_persistence_requests",
+  {
+    id: pUuid<"templatePersistenceRequest">().primaryKey(),
+    organizationId: safeOrganizationId("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    workspaceId: safeWorkspaceId("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    userId: p
+      .text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    idempotencyKey: p.varchar("idempotency_key", { length: 128 }).notNull(),
+    requestFingerprint: p
+      .varchar("request_fingerprint", { length: 64 })
+      .notNull(),
+    status: p
+      .varchar({ length: 16 })
+      .$type<TemplatePersistenceRequestStatus>()
+      .notNull()
+      .default(TEMPLATE_PERSISTENCE_REQUEST_STATUS.PENDING),
+    claimToken: p.uuid("claim_token").notNull(),
+    claimedAt: timestamptz("claimed_at").notNull().defaultNow(),
+    result: jsonb().$type<TemplatePersistenceResult>(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    completedAt: timestamptz("completed_at"),
+  },
+  (table) => [
+    p
+      .uniqueIndex("template_persistence_requests_org_user_key_uidx")
+      .on(table.organizationId, table.userId, table.idempotencyKey),
+    p
+      .index("template_persistence_requests_workspace_created_idx")
+      .on(table.workspaceId, table.createdAt),
+    p.check(
+      "template_persistence_requests_key_nonempty_check",
+      sql`length(${table.idempotencyKey}) > 0`,
+    ),
+    p.check(
+      "template_persistence_requests_fingerprint_check",
+      sql`${table.requestFingerprint} ~ '^[0-9a-f]{64}$'`,
+    ),
+    p.check(
+      "template_persistence_requests_state_check",
+      sql`(${table.status} = ${TEMPLATE_PERSISTENCE_REQUEST_STATUS.PENDING} AND ${table.result} IS NULL AND ${table.completedAt} IS NULL) OR (${table.status} = ${TEMPLATE_PERSISTENCE_REQUEST_STATUS.COMPLETED} AND ${table.result} IS NOT NULL AND ${table.completedAt} IS NOT NULL)`,
+    ),
+    ...wsOrganizationPolicies("template_persistence_requests"),
+  ],
+);
+
 export const templateVersions = p.pgTable(
   "template_versions",
   {
@@ -114,7 +200,7 @@ export const templateVersions = p.pgTable(
       .text("created_by")
       .notNull()
       .references(() => user.id, { onDelete: "restrict" }),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
     p
@@ -150,16 +236,52 @@ export const searchDocuments = p.pgTable(
     title: p.text().notNull().default(""),
     searchableText: p.text("searchable_text").notNull().default(""),
     language: p.varchar("language", { length: 10 }),
+    previewGeneration: p.uuid("preview_generation"),
     tsv: tsvector(),
-    updatedAt: p.timestamp("updated_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at").notNull().defaultNow(),
   },
   (table) => [
     p.index("search_documents_org_id_idx").on(table.organizationId),
     p
       .index("search_documents_org_workspace_idx")
       .on(table.organizationId, table.workspaceId),
+    p
+      .index("search_documents_org_updated_id_idx")
+      .on(table.organizationId, table.updatedAt.desc(), table.entityId.desc()),
     p.index("search_documents_tsv_idx").using("gin", table.tsv),
     ...wsPolicies(),
+  ],
+);
+
+export const searchDocumentPreviewPassages = p.pgTable(
+  "search_document_preview_passages",
+  {
+    entityId: safeUuid<"entity">("entity_id")
+      .notNull()
+      .references(() => searchDocuments.entityId, { onDelete: "cascade" }),
+    organizationId: safeOrganizationId("organization_id").notNull(),
+    workspaceId: safeWorkspaceId("workspace_id").notNull(),
+    generation: p.uuid().notNull(),
+    ordinal: p.integer().notNull(),
+    content: p.text().notNull(),
+    tsv: tsvector().notNull(),
+  },
+  (table) => [
+    p.primaryKey({
+      columns: [table.entityId, table.generation, table.ordinal],
+      name: "search_document_preview_passages_pk",
+    }),
+    p
+      .index("search_doc_preview_passages_scope_idx")
+      .on(
+        table.organizationId,
+        table.workspaceId,
+        table.entityId,
+        table.generation,
+        table.ordinal,
+      ),
+    p.index("search_doc_preview_passages_tsv_idx").using("gin", table.tsv),
+    ...wsOrganizationReadOnlyPolicies("search_document_preview_passages"),
   ],
 );
 
@@ -179,16 +301,52 @@ export const contactSearchDocuments = p.pgTable(
       .notNull(),
     title: p.text().notNull().default(""),
     searchableText: p.text("searchable_text").notNull().default(""),
+    previewGeneration: p.uuid("preview_generation"),
     tsv: tsvector(),
-    updatedAt: p.timestamp("updated_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at").notNull().defaultNow(),
   },
   (table) => [
     p.index("contact_search_docs_org_idx").on(table.organizationId),
     p
       .index("contact_search_docs_org_type_idx")
       .on(table.organizationId, table.contactType),
+    p
+      .index("contact_search_docs_org_updated_id_idx")
+      .on(table.organizationId, table.updatedAt.desc(), table.contactId.desc()),
     p.index("contact_search_docs_tsv_idx").using("gin", table.tsv),
     ...orgPolicies(),
+  ],
+);
+
+export const contactSearchDocumentPreviewPassages = p.pgTable(
+  "contact_search_document_preview_passages",
+  {
+    contactId: safeUuid<"contact">("contact_id")
+      .notNull()
+      .references(() => contactSearchDocuments.contactId, {
+        onDelete: "cascade",
+      }),
+    organizationId: safeOrganizationId("organization_id").notNull(),
+    generation: p.uuid().notNull(),
+    ordinal: p.integer().notNull(),
+    content: p.text().notNull(),
+    tsv: tsvector().notNull(),
+  },
+  (table) => [
+    p.primaryKey({
+      columns: [table.contactId, table.generation, table.ordinal],
+      name: "contact_search_document_preview_passages_pk",
+    }),
+    p
+      .index("contact_preview_passages_scope_idx")
+      .on(
+        table.organizationId,
+        table.contactId,
+        table.generation,
+        table.ordinal,
+      ),
+    p.index("contact_preview_passages_tsv_idx").using("gin", table.tsv),
+    ...orgReadOnlyPolicies("contact_search_document_preview_passages"),
   ],
 );
 
@@ -203,13 +361,55 @@ export const workspaceSearchDocuments = p.pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     title: p.text().notNull().default(""),
     searchableText: p.text("searchable_text").notNull().default(""),
+    previewGeneration: p.uuid("preview_generation"),
     tsv: tsvector(),
-    updatedAt: p.timestamp("updated_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at").notNull().defaultNow(),
   },
   (table) => [
     p.index("workspace_search_docs_org_idx").on(table.organizationId),
+    p
+      .index("workspace_search_docs_org_updated_id_idx")
+      .on(
+        table.organizationId,
+        table.updatedAt.desc(),
+        table.workspaceId.desc(),
+      ),
     p.index("workspace_search_docs_tsv_idx").using("gin", table.tsv),
     ...wsPolicies(),
+  ],
+);
+
+export const workspaceSearchDocumentPreviewPassages = p.pgTable(
+  "workspace_search_document_preview_passages",
+  {
+    workspaceId: safeWorkspaceId("workspace_id")
+      .notNull()
+      .references(() => workspaceSearchDocuments.workspaceId, {
+        onDelete: "cascade",
+      }),
+    organizationId: safeOrganizationId("organization_id").notNull(),
+    generation: p.uuid().notNull(),
+    ordinal: p.integer().notNull(),
+    content: p.text().notNull(),
+    tsv: tsvector().notNull(),
+  },
+  (table) => [
+    p.primaryKey({
+      columns: [table.workspaceId, table.generation, table.ordinal],
+      name: "workspace_search_document_preview_passages_pk",
+    }),
+    p
+      .index("workspace_preview_passages_scope_idx")
+      .on(
+        table.organizationId,
+        table.workspaceId,
+        table.generation,
+        table.ordinal,
+      ),
+    p.index("workspace_preview_passages_tsv_idx").using("gin", table.tsv),
+    ...wsOrganizationReadOnlyPolicies(
+      "workspace_search_document_preview_passages",
+    ),
   ],
 );
 
@@ -227,11 +427,27 @@ export const extractedContent = p.pgTable(
         onDelete: "cascade",
       }),
     workspaceId: safeWorkspaceId("workspace_id").notNull(),
+    /** Immutable source identity; null only for pre-provenance rows. */
+    sourceEntityVersionId: safeUuid<"entityVersion">(
+      "source_entity_version_id",
+    ).references(() => entityVersions.id, { onDelete: "set null" }),
+    sourceFieldId: safeUuid<"field">("source_field_id").references(
+      () => fields.id,
+      { onDelete: "set null" },
+    ),
+    sourceFileId: p.uuid("source_file_id"),
+    sourceSha256Hex: p.varchar("source_sha256_hex", { length: 64 }),
+    /** OCR-only derivative identity; null for native extraction rows. */
+    ocrRunId: safeUuid<"documentProcessingRun">("ocr_run_id"),
+    ocrProcessorVersion: p.integer("ocr_processor_version"),
+    /** Encrypted versioned page geometry used by viewers and regeneration. */
+    ocrPayloadCiphertext: bytea("ocr_payload_ciphertext"),
+    ocrPayloadIv: bytea("ocr_payload_iv"),
     ciphertext: bytea("ciphertext").notNull(),
     iv: bytea("iv").notNull(),
     charCount: p.integer("char_count").notNull(),
     language: p.varchar("language", { length: 10 }),
-    extractedAt: p.timestamp("extracted_at").notNull().defaultNow(),
+    extractedAt: timestamptz("extracted_at").notNull().defaultNow(),
   },
   (table) => [
     p.index("extracted_content_org_id_idx").on(table.organizationId),
@@ -242,6 +458,28 @@ export const extractedContent = p.pgTable(
       })
       .onDelete("cascade"),
     p.index("extracted_content_workspace_id_idx").on(table.workspaceId),
+    p
+      .index("extracted_content_source_entity_version_id_idx")
+      .on(table.sourceEntityVersionId),
+    p.index("extracted_content_source_field_id_idx").on(table.sourceFieldId),
+    p.check(
+      "extracted_content_source_sha256_hex_check",
+      sql`${table.sourceSha256Hex} IS NULL OR ${table.sourceSha256Hex} ~ '^[0-9a-f]{64}$'`,
+    ),
+    p.check(
+      "extracted_content_ocr_payload_complete_check",
+      sql`(
+        ${table.ocrRunId} IS NULL
+        AND ${table.ocrProcessorVersion} IS NULL
+        AND ${table.ocrPayloadCiphertext} IS NULL
+        AND ${table.ocrPayloadIv} IS NULL
+      ) OR (
+        ${table.ocrRunId} IS NOT NULL
+        AND ${table.ocrProcessorVersion} > 0
+        AND ${table.ocrPayloadCiphertext} IS NOT NULL
+        AND ${table.ocrPayloadIv} IS NOT NULL
+      )`,
+    ),
     ...wsPolicies(),
   ],
 );

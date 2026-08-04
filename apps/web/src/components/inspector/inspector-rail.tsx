@@ -14,23 +14,25 @@ import { ScrollArea } from "@stll/ui/components/scroll-area";
 import { containedHandler } from "@stll/ui/hooks/use-contained-handler";
 import { cn } from "@stll/ui/lib/utils";
 
+import { DocumentIcon } from "@/components/document-icon";
 import { ExternalSourceLogo } from "@/components/inspector/external-reference-panel";
 import { findMcpConnectorIconHref } from "@/components/inspector/external-source-icon";
 import { getActiveSkillChatContext } from "@/components/inspector/inspector-active-skill";
 import {
   isGenericInspectorTab,
-  useInspectorStore,
-} from "@/components/inspector/inspector-store";
+  useInspectorTabsStore,
+} from "@/components/inspector/inspector-tabs-store";
 import type {
   ChatTab,
   InspectorTab,
-} from "@/components/inspector/inspector-store";
+} from "@/components/inspector/inspector-tabs-store";
 import { buildMaximizeTabAction } from "@/components/inspector/maximize-tab";
 import { useRailContextMenu } from "@/components/inspector/use-rail-context-menu";
 import { useTabContextMenu } from "@/components/inspector/use-tab-context-menu";
 import { getInspectorView } from "@/components/inspector/view-registry";
 import { MatterIcon } from "@/components/matter-icon";
 import Tooltip from "@/components/tooltip";
+import { EntityKindIcon } from "@/components/workspaces/entity-kind-icon";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { useAuthenticatedUser } from "@/lib/authenticated-user-context";
 import {
@@ -38,10 +40,8 @@ import {
   SIDE_RAIL_ICON_BUTTON_SIZE,
   TOOLBAR_ROW_HEIGHT,
 } from "@/lib/consts";
-import { mcpConnectorsOptions } from "@/routes/_protected.knowledge/-queries";
-import { catalogueOptions } from "@/routes/_protected.knowledge/-queries/catalogue";
-import { DocumentIcon } from "@/routes/_protected.workspaces/$workspaceId/-components/document-icon";
-import { EntityKindIcon } from "@/routes/_protected.workspaces/$workspaceId/-components/entity-kind-icon";
+import { mcpConnectorsOptions } from "@/lib/knowledge/queries";
+import { catalogueOptions } from "@/lib/knowledge/queries/catalogue";
 
 type InspectorRailProps = {
   activeId: string | null;
@@ -342,8 +342,8 @@ const VerticalTabIcon = ({
  */
 const SuggestedReviveTab = () => {
   const t = useTranslations();
-  const suggestion = useInspectorStore((s) => s.reviveSuggestion);
-  const reviveSuggestedTab = useInspectorStore((s) => s.reviveSuggestedTab);
+  const suggestion = useInspectorTabsStore((s) => s.reviveSuggestion);
+  const reviveSuggestedTab = useInspectorTabsStore((s) => s.reviveSuggestedTab);
   if (suggestion === null) {
     return null;
   }
@@ -474,7 +474,7 @@ const VerticalTab = ({
   });
 
   // Flash the tab on (re-)activation.
-  const activationSeq = useInspectorStore((s) => s.activationSeq);
+  const activationSeq = useInspectorTabsStore((s) => s.activationSeq);
   const prevSeq = useRef(activationSeq);
   useExternalSyncEffect(() => {
     const el = tabRef.current;
@@ -486,8 +486,8 @@ const VerticalTab = ({
 
   // Targeted flash: flash this tab when something asks for it by id
   // (e.g. clicking a field in the document), regardless of active state.
-  const flashSeq = useInspectorStore((s) => s.flashSeq);
-  const flashTabId = useInspectorStore((s) => s.flashTabId);
+  const flashSeq = useInspectorTabsStore((s) => s.flashSeq);
+  const flashTabId = useInspectorTabsStore((s) => s.flashTabId);
   const prevFlashSeq = useRef(flashSeq);
   useExternalSyncEffect(() => {
     const el = tabRef.current;

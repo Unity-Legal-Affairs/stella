@@ -7,9 +7,10 @@ import {
   entities,
   entityVersions,
   fields,
+  pendingUploads,
 } from "@/api/db/schema";
-import { createChatRefRegistry } from "@/api/handlers/chat/tools/execute/ref-registry";
 import { toSafeId } from "@/api/lib/branded-types";
+import { createChatRefRegistry } from "@/api/lib/chat/ref-registry";
 import { asTestRaw } from "@/api/tests/helpers/test-tool-set";
 import { createScopedDbMock } from "@/api/tests/scoped-db-mock";
 
@@ -20,10 +21,12 @@ const enqueueImageThumbnailOrMarkFailedMock = mock(async () => {});
 const enqueuePdfDerivativeOrMarkFailedMock = mock(async () => {});
 
 void mock.module("@/api/lib/s3", () => ({
+  deleteS3ObjectWithSignal: s3DeleteMock,
   getS3: () => ({
     write: s3WriteMock,
     delete: s3DeleteMock,
   }),
+  putS3ObjectWithSignal: s3WriteMock,
 }));
 
 void mock.module("@/api/lib/search/process-extraction", () => ({
@@ -93,13 +96,10 @@ describe("markdownToStellaDocx", () => {
     const numberingXml = inspection.xmlParts.find(
       (part) => part.path === "word/numbering.xml",
     );
-    // Assert the A4 dimensions, not the exact tag: the generator is free to
-    // add attributes (0.5.2 started emitting an explicit w:orient), and this
-    // check is about the page geometry, not the serializer's attribute set.
-    const pageSize =
-      /<w:pgSz[^>]*\/>/u.exec(documentXml?.text ?? "")?.[0] ?? "";
-    expect(pageSize).toContain('w:w="11906"');
-    expect(pageSize).toContain('w:h="16838"');
+    const pageSizeTag = documentXml?.text.match(/<w:pgSz\b[^>]*\/>/u)?.[0];
+    expect(pageSizeTag).toContain('w:w="11906"');
+    expect(pageSizeTag).toContain('w:h="16838"');
+    expect(pageSizeTag).toContain('w:orient="portrait"');
     expect(stylesXml?.text).toContain('w:styleId="BodyText"');
 
     // Stella's own reserved numId 1-5 definitions are untouched (still
@@ -153,14 +153,24 @@ describe("createCreateWorkspaceDocumentTools", () => {
         },
       },
       $count: async () => 0,
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => ({ for: async () => [{ status: "active" }] }),
+          }),
+        }),
+      }),
       insert: (table: unknown) => ({
-        values: (values: { name?: string }) => {
+        values: (values: { id?: string; name?: string }) => {
           if (table === documentCounters) {
             return {
               onConflictDoUpdate: () => ({
                 returning: async () => [{ lastValue: 1 }],
               }),
             };
+          }
+          if (table === pendingUploads) {
+            return { returning: async () => [{ id: values.id }] };
           }
           if (table === entities) {
             insertedFileName = values.name;
@@ -175,7 +185,14 @@ describe("createCreateWorkspaceDocumentTools", () => {
           return undefined;
         },
       }),
-      update: () => ({ set: () => ({ where: async () => {} }) }),
+      update: (table: unknown) => ({
+        set: () => ({
+          where: () =>
+            table === pendingUploads
+              ? { returning: async () => [{ id: "intent_1" }] }
+              : undefined,
+        }),
+      }),
     };
     return { tx, getInsertedFileName: () => insertedFileName };
   };

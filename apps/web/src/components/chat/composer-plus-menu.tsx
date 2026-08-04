@@ -60,6 +60,7 @@ import {
 } from "@/components/chat-mention-helpers";
 import { MentionIcon } from "@/components/chat-mention-list";
 import { insertPastedTextChip } from "@/components/chat-pasted-text-extension";
+import { COMPOSER_CONTROL_BUTTON_SIZE } from "@/components/chat/composer-control-style";
 import { slashItemChipAttrs } from "@/components/chat/prompt-slash-extension";
 import type { SlashItem } from "@/components/chat/prompt-slash-extension";
 import { MatterIcon } from "@/components/matter-icon";
@@ -67,16 +68,16 @@ import { modelOptionsOptions } from "@/features/chat/queries";
 import { api } from "@/lib/api";
 import type { ChatThreadRef } from "@/lib/chat-thread-ref";
 import { detached } from "@/lib/detached";
-import { toSafeId } from "@/lib/safe-id";
 import {
   knowledgeKeys,
   mcpConnectionsOptions,
   mcpConnectorsOptions,
   skillsOptions,
-} from "@/routes/_protected.knowledge/-queries";
-import { useEntitiesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import { viewsOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/views";
-import { workspacesNavigationOptions } from "@/routes/_protected.workspaces/-queries";
+} from "@/lib/knowledge/queries";
+import { toSafeId } from "@/lib/safe-id";
+import { workspacesNavigationOptions } from "@/lib/workspaces/queries";
+import { useEntitiesOptions } from "@/lib/workspaces/queries/entities";
+import { viewsOptions } from "@/lib/workspaces/queries/views";
 
 const PROVIDER_LABEL_FALLBACKS: Readonly<Partial<Record<string, string>>> =
   PROVIDER_LABELS;
@@ -216,7 +217,7 @@ export const ComposerPlusMenu = ({
               "border-border size-7 shrink-0 rounded-full border",
               triggerClassName,
             )}
-            size="icon-xs"
+            size={COMPOSER_CONTROL_BUTTON_SIZE}
             type="button"
             variant="secondary"
           />
@@ -366,7 +367,7 @@ const ComposerModelsSubmenu = ({
         <CpuIcon />
         {t("chat.composerMenu.models")}
       </MenuSubTrigger>
-      <MenuSubPopup className="w-64">
+      <MenuSubPopup className="w-[min(32rem,calc(100vw-2rem))] max-w-(--available-width)">
         <ComposerSubmenuSearch
           onChange={setSearch}
           // Reuses the AI-config role-model picker's placeholder (same
@@ -381,10 +382,9 @@ const ComposerModelsSubmenu = ({
           <MenuRadioGroup value={selectedModel ?? ""}>
             {rows.map((row) => (
               <MenuRadioItem
-                // `minmax(0,1fr)` lets the label cell shrink so `truncate`
-                // applies; the default `1fr` track sizes to the longest model
-                // id and forces horizontal overflow (same fix as the matters
-                // picker's TRUNCATING_ITEM_CLASS).
+                // `minmax(0,1fr)` lets the label cell shrink and wrap; the
+                // default `1fr` track sizes to the longest model id and forces
+                // horizontal overflow.
                 className="grid-cols-[1rem_minmax(0,1fr)]"
                 key={row.value || "default"}
                 onClick={() => {
@@ -392,10 +392,12 @@ const ComposerModelsSubmenu = ({
                 }}
                 value={row.value}
               >
-                {/* `block`: the radio item's own children wrapper is inline,
-                    and `truncate`'s overflow clipping is inert on inline
-                    elements. */}
-                <span className="block truncate">{row.label}</span>
+                {/* Model identifiers are decision-critical and often share a
+                    long provider prefix. Keep the complete value visible;
+                    wrap only when the viewport cannot fit the wider popup. */}
+                <span className="block [overflow-wrap:anywhere] whitespace-normal">
+                  {row.label}
+                </span>
               </MenuRadioItem>
             ))}
           </MenuRadioGroup>

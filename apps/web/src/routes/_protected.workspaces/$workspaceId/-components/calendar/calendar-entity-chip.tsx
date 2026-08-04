@@ -15,12 +15,12 @@ import { cn } from "@stll/ui/lib/utils";
 
 import type { DragPreviewData } from "@/components/drag-preview";
 import { renderDragPreview } from "@/components/drag-preview";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { useLocale } from "@/i18n/formatting-context";
-import { ENTITY_DRAG_TYPE } from "@/routes/_protected.workspaces/$workspaceId/-components/drag-constants";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
+import { ENTITY_DRAG_TYPE } from "@/lib/workspaces/drag-constants";
+import type { CalendarTask } from "@/lib/workspaces/queries/calendar-tasks";
 import { useInspectorFlash } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-inspector-flash";
-import type { CalendarTask } from "@/routes/_protected.workspaces/$workspaceId/-queries/calendar-tasks";
 
 const TASK_STATUS_BORDER_COLORS: Record<string, string> = {
   open: "border-s-muted-foreground",
@@ -44,7 +44,7 @@ export const CalendarEntityChip = ({
   const t = useTranslations();
   const locale = useLocale();
   const name = entity.name || t("tasks.untitled");
-  const openTask = useInspectorStore((s) => s.openTask);
+  const openTask = useInspectorTabsStore((s) => s.openTask);
 
   const dragRef = useRef<HTMLButtonElement>(null);
 

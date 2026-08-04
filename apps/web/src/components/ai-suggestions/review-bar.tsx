@@ -6,13 +6,17 @@
  * here and there can never disagree.
  *
  * Keyboard (active while the bar is visible and focus is in the editor
- * or on the bar, never in the chat composer or a form field):
+ * or on the bar, never in the chat composer or a form field). The bindings
+ * below are the DEFAULTS; each is a registry entry (`acceptSuggestion`,
+ * `rejectSuggestion`, `previousSuggestion`, `nextSuggestion`) that the user
+ * can rebind, so the handler matches the effective binding rather than a
+ * hardcoded chord:
  *   Alt+Enter        accept the focused suggestion and advance
  *   Alt+Shift+Enter  reject the focused suggestion and advance
  *   Alt+ArrowUp      focus the previous pending suggestion
  *   Alt+ArrowDown    focus the next pending suggestion
  *
- * Alt (not Cmd/Ctrl) because folio binds Mod+Enter to a document-level
+ * Alt (not Cmd/Ctrl) is the DEFAULT because folio binds Mod+Enter to a document-level
  * page break in the capture phase and Mod+Backspace to delete-backward;
  * Alt+Enter, Alt+Shift+Enter and Alt+ArrowUp/Down are all unbound.
  * Reject deliberately avoids Alt+Backspace: that IS macOS delete-word
@@ -26,7 +30,17 @@
 import { useRef } from "react";
 import type { RefObject } from "react";
 
-import { CheckIcon, ChevronDownIcon, ChevronUpIcon, XIcon } from "lucide-react";
+import {
+  formatForDisplay,
+  matchesKeyboardEvent,
+} from "@tanstack/react-hotkeys";
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  RotateCcwIcon,
+  XIcon,
+} from "lucide-react";
 import { useTranslations } from "use-intl";
 
 import type { DocxEditorRef } from "@stll/folio-react";
@@ -41,41 +55,31 @@ import {
 import { cn } from "@stll/ui/lib/utils";
 
 import { AcceptAllButton } from "@/components/ai-suggestions/accept-all-button";
+import { DOCKED_COMPOSER_WIDTH_CLASS } from "@/components/ai-suggestions/composer-geometry";
+import {
+  getReviewBarAction,
+  getReviewBarFocusTarget,
+  getReviewBarPosition,
+} from "@/components/ai-suggestions/review-bar.logic";
 import {
   getReviewFocusedId,
   useReviewStore,
 } from "@/components/ai-suggestions/review-store";
 import type { ReviewSuggestion } from "@/components/ai-suggestions/review-store";
 import { useReviewActions } from "@/components/ai-suggestions/use-review-actions";
-import { useMountEffect } from "@/hooks/use-effect";
+import { useExternalSyncEffect, useMountEffect } from "@/hooks/use-effect";
 import { useLatestCallback } from "@/hooks/use-latest-callback";
 import { detached } from "@/lib/detached";
+import { useEffectiveHotkey } from "@/lib/use-effective-shortcuts";
 
 const EMPTY_SUGGESTIONS: readonly ReviewSuggestion[] = [];
 
-// Shortcut hints shown in the button tooltips so the bindings are
-// discoverable in the UI, not just the docstring. Rendered with the
-// platform's own modifier glyphs (Option/⌥ on macOS, Alt elsewhere) —
-// these are keyboard tokens, not translatable prose.
-const IS_MAC =
-  typeof navigator !== "undefined" &&
-  /Mac|iP(?:hone|ad|od)/u.test(navigator.userAgent);
-const SHORTCUT_HINTS = IS_MAC
-  ? { accept: "⌥↵", reject: "⌥⇧↵", prev: "⌥↑", next: "⌥↓" }
-  : {
-      accept: "Alt+Enter",
-      reject: "Alt+Shift+Enter",
-      prev: "Alt+↑",
-      next: "Alt+↓",
-    };
-
 const isPending = (item: ReviewSuggestion): boolean =>
-  item.status === "pending" || item.status === "applying";
+  item.status === "pending";
 
 type ReviewBarProps = {
   entityId: string;
-  /** Workspace the entity lives in; scopes the suggestion persistence calls. */
-  workspaceId: string;
+  persistence: { type: "local" } | { type: "workspace"; workspaceId: string };
   docxEditorRef: RefObject<DocxEditorRef | null>;
   /** Whether the editor currently accepts edit operations. */
   docxEditable: boolean;
@@ -84,12 +88,20 @@ type ReviewBarProps = {
 
 export const ReviewBar = ({
   entityId,
-  workspaceId,
+  persistence,
   docxEditorRef,
   docxEditable,
   requestDocxEditMode,
 }: ReviewBarProps) => {
   const t = useTranslations();
+  // Effective (user-rebindable) bindings for the four review shortcuts. The
+  // capture-phase handler below matches against these, and the tooltips render
+  // them, so a rebind changes both behavior and the discoverable hint. These
+  // are keyboard tokens (⌥↵ / Alt+Enter), not translatable prose.
+  const acceptHotkey = useEffectiveHotkey("acceptSuggestion");
+  const rejectHotkey = useEffectiveHotkey("rejectSuggestion");
+  const prevHotkey = useEffectiveHotkey("previousSuggestion");
+  const nextHotkey = useEffectiveHotkey("nextSuggestion");
   // `?? EMPTY_SUGGESTIONS` shares one module-level array for no-session
   // reads so useSyncExternalStore doesn't loop on a fresh `[]` each call.
   const suggestions =
@@ -97,39 +109,56 @@ export const ReviewBar = ({
   const focusedId = useReviewStore((state) =>
     getReviewFocusedId(state, entityId),
   );
+  const setFocusedId = useReviewStore((state) => state.setFocusedId);
   const {
     applyMode,
     setApplyMode,
     acceptOne,
     rejectOne,
     acceptMany,
+    revertOne,
     navigateTo,
   } = useReviewActions({
     entityId,
-    workspaceId,
+    persistence,
     docxEditorRef,
     docxEditable,
     requestDocxEditMode,
   });
 
   const pendingItems = suggestions.filter(isPending);
-  const total = pendingItems.length;
-  const focusedIndex = pendingItems.findIndex((item) => item.id === focusedId);
-  const activeIndex = Math.max(focusedIndex, 0);
+  const { activeIndex, current, total } = getReviewBarPosition(
+    suggestions,
+    focusedId,
+  );
+  const activeItem = suggestions.at(activeIndex);
+  const activeAction =
+    activeItem === undefined ? "busy" : getReviewBarAction(activeItem);
+
+  // The first proposed edit must be visible in the document as soon as the
+  // review controls appear. Without this, the bar says "1 / n" but Folio has
+  // no focused id, so it renders only generic underlines rather than the
+  // exact struck-through/replacement pair the reviewer is about to resolve.
+  const focusTargetId = getReviewBarFocusTarget(suggestions, focusedId);
+  useExternalSyncEffect(() => {
+    if (focusTargetId !== null) {
+      setFocusedId(entityId, focusTargetId);
+    }
+  }, [entityId, focusTargetId, setFocusedId]);
 
   const focusAt = useLatestCallback((index: number) => {
-    const item = pendingItems.at(index);
+    const item = suggestions.at(index);
     if (item) {
       navigateTo(item);
     }
   });
 
   const goPrev = useLatestCallback(() => {
-    focusAt(focusedIndex <= 0 ? 0 : focusedIndex - 1);
+    focusAt(activeIndex <= 0 ? 0 : activeIndex - 1);
   });
 
   const goNext = useLatestCallback(() => {
-    focusAt(focusedIndex === -1 ? 0 : Math.min(total - 1, focusedIndex + 1));
+    focusAt(Math.min(total - 1, activeIndex + 1));
   });
 
   // Guards against a second acceptance starting while the current one is
@@ -140,15 +169,14 @@ export const ReviewBar = ({
     if (acceptBusyRef.current) {
       return;
     }
-    const target = pendingItems.at(activeIndex);
-    if (!target) {
+    const target = suggestions.at(activeIndex);
+    if (target?.status !== "pending") {
       return;
     }
     // Capture the neighbour BEFORE accepting: after accept the target
     // leaves the pending queue, so the "next" to park on is the item that
     // followed it (or the one before, at the end of the list).
-    const next =
-      pendingItems.at(activeIndex + 1) ?? pendingItems.at(activeIndex - 1);
+    const next = suggestions.at(activeIndex + 1);
     acceptBusyRef.current = true;
     // `.finally` (not try/finally): a try-without-catch trips the React
     // Compiler's HIR lowering and bails the component out of optimization.
@@ -161,56 +189,57 @@ export const ReviewBar = ({
   });
 
   const rejectAndAdvance = useLatestCallback(() => {
-    const target = pendingItems.at(activeIndex);
-    if (!target) {
+    const target = suggestions.at(activeIndex);
+    if (target?.status !== "pending") {
       return;
     }
-    const next =
-      pendingItems.at(activeIndex + 1) ?? pendingItems.at(activeIndex - 1);
+    const next = suggestions.at(activeIndex + 1);
     rejectOne(target);
     if (next && next.id !== target.id) {
       navigateTo(next);
     }
   });
 
-  const handleKeyDown = useLatestCallback((event: KeyboardEvent) => {
-    if (
-      total === 0 ||
-      !event.altKey ||
-      event.ctrlKey ||
-      event.metaKey ||
-      !shouldHandleReviewShortcut()
-    ) {
+  const revertActive = useLatestCallback(() => {
+    const target = suggestions.at(activeIndex);
+    if (target === undefined || getReviewBarAction(target) !== "revert") {
       return;
     }
-    switch (event.key) {
-      case "Enter":
-        // Alt+Enter accepts, Alt+Shift+Enter rejects. Branch on shift
-        // explicitly so a stray shift can't turn accept into reject or
-        // vice versa.
-        claimShortcut(event);
-        if (event.shiftKey) {
-          rejectAndAdvance();
-        } else {
-          detached(acceptAndAdvance(), "ReviewBar");
-        }
+    revertOne(target);
+  });
+
+  const handleKeyDown = useLatestCallback((event: KeyboardEvent) => {
+    if (total === 0 || !shouldHandleReviewShortcut()) {
+      return;
+    }
+    // Match against the effective bindings. `matchesKeyboardEvent` compares
+    // modifiers exactly, so accept (default Alt+Enter) and reject (default
+    // Alt+Shift+Enter) stay distinct even though they share the Enter key, and
+    // a stray Shift can never turn one into the other.
+    if (matchesKeyboardEvent(event, rejectHotkey)) {
+      if (activeAction !== "resolve") {
         return;
-      case "ArrowUp":
-        if (event.shiftKey) {
-          return;
-        }
-        claimShortcut(event);
-        goPrev();
+      }
+      claimShortcut(event);
+      rejectAndAdvance();
+      return;
+    }
+    if (matchesKeyboardEvent(event, acceptHotkey)) {
+      if (activeAction !== "resolve") {
         return;
-      case "ArrowDown":
-        if (event.shiftKey) {
-          return;
-        }
-        claimShortcut(event);
-        goNext();
-        return;
-      default:
-        return;
+      }
+      claimShortcut(event);
+      detached(acceptAndAdvance(), "ReviewBar");
+      return;
+    }
+    if (matchesKeyboardEvent(event, prevHotkey)) {
+      claimShortcut(event);
+      goPrev();
+      return;
+    }
+    if (matchesKeyboardEvent(event, nextHotkey)) {
+      claimShortcut(event);
+      goNext();
     }
   });
 
@@ -228,20 +257,29 @@ export const ReviewBar = ({
     return null;
   }
 
-  const current = Math.min(activeIndex + 1, total);
-
   return (
     <div
       aria-label={t("docxReview.barLabel")}
       data-docx-review-bar=""
       className={cn(
-        "bg-popover/90 text-popover-foreground border-border pointer-events-auto absolute start-1/2 bottom-28 z-50 flex -translate-x-1/2 items-center gap-1 rounded-full border py-1 ps-2 pe-1.5",
-        "[backdrop-filter:blur(18px)_saturate(160%)] [-webkit-backdrop-filter:blur(18px)_saturate(160%)]",
-        "shadow-[0_1px_2px_rgb(0_0_0/0.06),0_12px_32px_rgb(0_0_0/0.14)]",
+        "text-popover-foreground border-foreground/15 pointer-events-auto absolute start-1/2 bottom-24 z-50 flex -translate-x-1/2 items-center gap-1 rounded-2xl border py-0.5 ps-1.5 pe-1",
+        DOCKED_COMPOSER_WIDTH_CLASS,
+        "bg-(--doc-float-surface) [--doc-float-surface:var(--color-white)] dark:[--doc-float-surface:var(--popover)]",
+        "shadow-[0_0_0_1px_rgb(0_0_0/0.02),0_1px_2px_rgb(0_0_0/0.03),0_8px_20px_rgb(0_0_0/0.05)]",
         "animate-in fade-in-0 slide-in-from-bottom-1",
       )}
       role="toolbar"
     >
+      {activeItem !== undefined && (
+        <button
+          className="text-foreground hover:bg-muted focus-visible:ring-ring min-w-0 flex-1 truncate rounded-md px-1.5 text-start text-xs font-medium transition-colors outline-none focus-visible:ring-2 @max-[42rem]/file-viewer:hidden"
+          onClick={() => navigateTo(activeItem)}
+          title={activeItem.summary}
+          type="button"
+        >
+          {activeItem.summary}
+        </button>
+      )}
       <span className="text-muted-foreground min-w-14 px-1 text-center text-xs font-medium tabular-nums">
         {t("common.stepProgress", {
           current: String(current),
@@ -250,56 +288,84 @@ export const ReviewBar = ({
       </span>
       <Button
         aria-label={t("common.previous")}
-        disabled={current <= 1}
+        disabled={activeIndex <= 0}
         onClick={goPrev}
         size="icon-sm"
-        tooltip={`${t("common.previous")} · ${SHORTCUT_HINTS.prev}`}
+        tooltip={`${t("common.previous")} · ${formatForDisplay(prevHotkey)}`}
         variant="ghost"
       >
         <ChevronUpIcon className="size-4" />
       </Button>
       <Button
         aria-label={t("common.next")}
-        disabled={current >= total}
+        disabled={activeIndex >= suggestions.length - 1}
         onClick={goNext}
         size="icon-sm"
-        tooltip={`${t("common.next")} · ${SHORTCUT_HINTS.next}`}
+        tooltip={`${t("common.next")} · ${formatForDisplay(nextHotkey)}`}
         variant="ghost"
       >
         <ChevronDownIcon className="size-4" />
       </Button>
       <span aria-hidden="true" className="bg-border mx-0.5 h-5 w-px" />
-      <Button
-        className="h-7 px-2.5 text-xs"
-        onClick={() => {
-          detached(acceptAndAdvance(), "ReviewBar");
-        }}
-        size="sm"
-        tooltip={`${t("common.accept")} · ${SHORTCUT_HINTS.accept}`}
-        variant="default"
-      >
-        <CheckIcon className="me-1 size-3.5" />
-        {t("common.accept")}
-      </Button>
-      <Button
-        className="h-7 px-2.5 text-xs"
-        onClick={rejectAndAdvance}
-        size="sm"
-        tooltip={`${t("docxReview.reject")} · ${SHORTCUT_HINTS.reject}`}
-        variant="outline"
-      >
-        <XIcon className="me-1 size-3.5" />
-        {t("docxReview.reject")}
-      </Button>
-      <AcceptAllButton
-        className="h-7 px-2.5 text-xs"
-        onAcceptAll={acceptMany}
-        pendingItems={pendingItems}
-        size="sm"
-        variant="ghost"
-      >
-        {t("docxReview.acceptAll")}
-      </AcceptAllButton>
+      {activeAction === "revert" && (
+        <Button
+          className="h-7 px-2.5 text-xs"
+          onClick={revertActive}
+          size="sm"
+          tooltip={t("docxReview.revert")}
+          variant="outline"
+        >
+          <RotateCcwIcon className="me-1 size-3.5 @max-[80rem]/file-viewer:me-0" />
+          <span className="@max-[80rem]/file-viewer:hidden">
+            {t("docxReview.revert")}
+          </span>
+        </Button>
+      )}
+      {activeAction !== "revert" && activeAction !== "resolved" && (
+        <>
+          <Button
+            className="h-7 px-2.5 text-xs"
+            disabled={activeAction === "busy"}
+            onClick={() => {
+              detached(acceptAndAdvance(), "ReviewBar");
+            }}
+            size="sm"
+            tooltip={`${t("common.accept")} · ${formatForDisplay(acceptHotkey)}`}
+            variant="default"
+          >
+            <CheckIcon className="me-1 size-3.5 @max-[80rem]/file-viewer:me-0" />
+            <span className="@max-[80rem]/file-viewer:hidden">
+              {t("common.accept")}
+            </span>
+          </Button>
+          <Button
+            className="h-7 px-2.5 text-xs"
+            disabled={activeAction === "busy"}
+            onClick={rejectAndAdvance}
+            size="sm"
+            tooltip={`${t("docxReview.reject")} · ${formatForDisplay(rejectHotkey)}`}
+            variant="outline"
+          >
+            <XIcon className="me-1 size-3.5 @max-[80rem]/file-viewer:me-0" />
+            <span className="@max-[80rem]/file-viewer:hidden">
+              {t("docxReview.reject")}
+            </span>
+          </Button>
+        </>
+      )}
+      {pendingItems.length > 0 && (
+        <AcceptAllButton
+          className="h-7 px-2.5 text-xs"
+          onAcceptAll={acceptMany}
+          pendingItems={pendingItems}
+          size="sm"
+          variant="ghost"
+        >
+          <span className="@max-[80rem]/file-viewer:hidden">
+            {t("docxReview.acceptAll")}
+          </span>
+        </AcceptAllButton>
+      )}
       <span aria-hidden="true" className="bg-border mx-0.5 h-5 w-px" />
       <Select
         onValueChange={(value) => {
@@ -311,7 +377,7 @@ export const ReviewBar = ({
       >
         <SelectTrigger
           aria-label={t("docxReview.applyAs")}
-          className="hover:bg-muted h-7 w-auto min-w-0 justify-between gap-1 rounded-full border-0 bg-transparent px-2 text-xs font-medium"
+          className="hover:bg-muted h-7 w-auto max-w-64 min-w-0 justify-between gap-1 rounded-full border-0 bg-transparent px-2 text-xs font-medium @max-[36rem]/file-viewer:max-w-36"
         >
           <SelectValue />
         </SelectTrigger>

@@ -20,12 +20,15 @@ export default defineConfig({
     // Override ultracite defaults for Stella
     "no-console": "error",
     "no-shadow": "error",
-    "require-await": "error",
+    // The TypeScript extension below recognizes returned thenables. Retain
+    // the base rule only for JavaScript through the override below.
+    "require-await": "off",
     "no-useless-catch": "error",
     "no-non-null-assertion": "error",
 
     "typescript/no-explicit-any": "error",
     "typescript/no-dynamic-delete": "error",
+    "typescript/require-await": "error",
     "typescript/no-misused-promises": [
       "error",
       { checksVoidReturn: { attributes: false } },
@@ -75,8 +78,8 @@ export default defineConfig({
     "promise/no-return-in-finally": "error",
     "no-useless-assignment": "error",
 
-    // Keep `import/no-cycle` despite its ~20% share of lint time: the
-    // Module Side Effects section in CLAUDE.md documents the TDZ class
+    // Keep `import/no-cycle`: current web profiling puts it below 1% of rule
+    // time. The Module Side Effects section in CLAUDE.md documents the TDZ class
     // of bugs that circular imports cause with module-level singletons.
     // The rule has 0 current hits, but its job is regression protection.
     "import/no-cycle": "error",
@@ -110,6 +113,12 @@ export default defineConfig({
     "no-coerced-optional-union-enum/no-coerced-optional-union-enum": "error",
     "tagged-error-requires-message/tagged-error-requires-message": "error",
     "require-custom-jsonb-column/require-custom-jsonb-column": "error",
+    // The column-cast allowlist lives in per-file overrides below, scoped to
+    // the files that own the schema objects, so the same spelling elsewhere
+    // stays flagged.
+    "no-bare-jsonb-cast/no-bare-jsonb-cast": "error",
+    "require-timestamptz-column/require-timestamptz-column": "error",
+    "no-naive-timestamp-cast/no-naive-timestamp-cast": "error",
     "no-spread-input-in-query-key/no-spread-input-in-query-key": "error",
     "no-facade-imports/no-facade-imports": "error",
     "no-unsafe-inner-html/no-unsafe-inner-html": "error",
@@ -259,6 +268,9 @@ export default defineConfig({
       "error",
       { ignorePrimitives: { string: true, boolean: true } },
     ],
+    // The rule is still nursery; restrict it to actual nullish operands so
+    // replacing a truthiness check cannot change 0/false/empty-string behavior.
+    "typescript/prefer-optional-chain": ["error", { requireNullish: true }],
     "typescript/only-throw-error": [
       "error",
       {
@@ -341,6 +353,7 @@ export default defineConfig({
     "./.oxlint-plugins/no-raw-user-id-schema.ts",
     "./.oxlint-plugins/no-offset-pagination.ts",
     "./.oxlint-plugins/require-query-limit.ts",
+    "./.oxlint-plugins/require-search-scope.ts",
     "./.oxlint-plugins/no-direct-ingestion-checkpoint-write.ts",
     "./.oxlint-plugins/mcp-security.ts",
     "./.oxlint-plugins/auth-lifecycle.ts",
@@ -350,6 +363,7 @@ export default defineConfig({
     "./.oxlint-plugins/no-facade-imports.ts",
     "./.oxlint-plugins/no-secret-in-log-sink.ts",
     "./.oxlint-plugins/no-raw-api-url.ts",
+    "./.oxlint-plugins/no-legacy-entity-route.ts",
     "./.oxlint-plugins/require-eden-error-check.ts",
     "./.oxlint-plugins/require-function-replacer.ts",
     "./.oxlint-plugins/require-fetch-timeout.ts",
@@ -369,6 +383,9 @@ export default defineConfig({
     "./.oxlint-plugins/no-coerced-optional-union-enum.ts",
     "./.oxlint-plugins/tagged-error-requires-message.ts",
     "./.oxlint-plugins/require-custom-jsonb-column.ts",
+    "./.oxlint-plugins/no-bare-jsonb-cast.ts",
+    "./.oxlint-plugins/require-timestamptz-column.ts",
+    "./.oxlint-plugins/no-naive-timestamp-cast.ts",
     "./.oxlint-plugins/no-spread-input-in-query-key.ts",
     "./.oxlint-plugins/no-unsafe-inner-html.ts",
     "./.oxlint-plugins/no-centered-scroll-column.ts",
@@ -385,11 +402,19 @@ export default defineConfig({
     "./.oxlint-plugins/require-use-shallow.ts",
     "./.oxlint-plugins/no-raw-stored-json.ts",
     "./.oxlint-plugins/no-detached-void.ts",
+    "./.oxlint-plugins/no-broad-translation-callable.ts",
   ],
 
   overrides: [
     ...(core.overrides ?? []),
     ...libraryOverrides,
+    {
+      files: ["**/*.{js,jsx,mjs,cjs}"],
+      rules: {
+        "require-await": "error",
+        "typescript/require-await": "off",
+      },
+    },
     {
       // Custom oxlint plugin rules traverse AST nodes that the runtime
       // delivers as untyped (effectively `any`). Strict any-flow rules
@@ -413,6 +438,39 @@ export default defineConfig({
         // directives.
         "suppression-hygiene/require-description": "off",
         "suppression-hygiene/no-foreign-directive": "off",
+      },
+    },
+    {
+      // The only interpolations that legitimately take a bare `::jsonb`: each
+      // casts a text column, not a bind parameter. Named rather than inferred
+      // from shape (`payload.astJson` is a member expression too and is a
+      // serialized value), and scoped to the file that owns the schema object
+      // so the same spelling elsewhere stays flagged.
+      files: ["apps/api/src/db/auth-schema.ts"],
+      rules: {
+        "no-bare-jsonb-cast/no-bare-jsonb-cast": [
+          "error",
+          { allowedColumnExpressions: ["table.metadata"] },
+        ],
+      },
+    },
+    {
+      files: ["apps/api/src/lib/machine-api-key-scope.ts"],
+      rules: {
+        "no-bare-jsonb-cast/no-bare-jsonb-cast": [
+          "error",
+          { allowedColumnExpressions: ["apikey.metadata"] },
+        ],
+      },
+    },
+    {
+      // Exercise the allowed-column case (`_columnCast`) in the fixture.
+      files: [".oxlint-plugins/__fixtures__/no-bare-jsonb-cast.fixture.ts"],
+      rules: {
+        "no-bare-jsonb-cast/no-bare-jsonb-cast": [
+          "error",
+          { allowedColumnExpressions: ["table.metadata"] },
+        ],
       },
     },
     {
@@ -447,6 +505,14 @@ export default defineConfig({
     {
       files: [".oxlint-plugins/__fixtures__/no-ref-mirror.fixture.tsx"],
       rules: { "no-ref-mirror/no-ref-mirror": "error" },
+    },
+    {
+      files: [
+        ".oxlint-plugins/__fixtures__/no-legacy-entity-route.fixture.tsx",
+      ],
+      rules: {
+        "no-legacy-entity-route/no-legacy-entity-route": "error",
+      },
     },
     {
       files: [".oxlint-plugins/__fixtures__/require-use-shallow.fixture.tsx"],
@@ -517,6 +583,14 @@ export default defineConfig({
       files: ["**/scripts/**"],
       rules: {
         "no-console": "off",
+        // `noPropertyAccessFromIndexSignature` requires bracket access on the
+        // index-signature types these config/JSON parsers work with, which is
+        // exactly what `dot-notation` flags. Keep the rule for real named
+        // properties; allow the bracket form the compiler mandates.
+        "typescript/dot-notation": [
+          "error",
+          { allowIndexSignaturePropertyAccess: true },
+        ],
         // Scripts import from untyped packages and use dynamic data;
         // strict unsafe-any rules add friction without real safety.
         "typescript/no-unsafe-assignment": "off",
@@ -608,7 +682,7 @@ export default defineConfig({
         "apps/api/src/db/auth-schema.ts",
         "apps/api/src/handlers/case-law/ingestion/adapters/utils.ts",
         "apps/api/src/lib/markdown/html-to-markdown.ts",
-        "apps/web/src/routes/_protected.workspaces/$workspaceId/-components/create-property.tsx",
+        "apps/web/src/components/workspaces/create-property.tsx",
       ],
       rules: { "require-unicode-regexp": "off" },
     },
@@ -678,6 +752,19 @@ export default defineConfig({
       },
     },
     {
+      // A use-intl translator is an overloaded callable whose signatures span
+      // the whole message catalogue. Passing it through a broad helper type can
+      // turn one assignability check into minutes of compiler work.
+      files: [
+        "apps/web/src/**/*.{ts,tsx}",
+        "apps/landing/src/**/*.{ts,tsx}",
+        ".oxlint-plugins/__fixtures__/no-broad-translation-callable.fixture.ts",
+      ],
+      rules: {
+        "no-broad-translation-callable/no-broad-translation-callable": "error",
+      },
+    },
+    {
       // Persisted-storage reads: scoped to apps/web, the only surface that
       // reads localStorage/sessionStorage. The helper module itself is the
       // one place a raw JSON.parse on a persisted string is intentional.
@@ -699,6 +786,14 @@ export default defineConfig({
       excludeFiles: ["apps/web/src/**/*.test.{ts,tsx}"],
       rules: {
         "require-eden-error-check/require-eden-error-check": "error",
+      },
+    },
+    {
+      // The entity detail redirect route was removed. Keep its old public URL
+      // out of source so every caller supplies a canonical destination.
+      files: ["apps/web/src/**/*.{ts,tsx}"],
+      rules: {
+        "no-legacy-entity-route/no-legacy-entity-route": "error",
       },
     },
     {
@@ -828,6 +923,15 @@ export default defineConfig({
       },
     },
     {
+      files: ["apps/web/src/hooks/use-effect.ts"],
+      rules: {
+        // These generic wrappers intentionally accept opaque callbacks and
+        // dependency arrays. Their call sites own dependency correctness, so
+        // the compiler cannot analyze them as ordinary component hooks.
+        "react/react-compiler": "off",
+      },
+    },
+    {
       files: ["apps/web/src/**/*.{ts,tsx}"],
       rules: {
         "react/jsx-key": "error",
@@ -875,7 +979,7 @@ export default defineConfig({
                   "Older-message paging updates the seeded Chat identity during render so stale in-flight page responses are discarded across thread switches and same-thread refetches.",
               },
               {
-                path: "apps/web/src/routes/_protected.knowledge/-components/template-form.tsx",
+                path: "apps/web/src/components/templates/template-form.tsx",
                 reason:
                   "Form refs bridge synchronous onChange/onBlur ordering before React commits, so validation reads the latest field values and touched state inside ordinary event handlers.",
               },
@@ -890,7 +994,7 @@ export default defineConfig({
                   "Rapid dependency edits compose against latest optimistic state during event handlers and transitions; this is mutable optimistic state, not stale effect callback plumbing.",
               },
               {
-                path: "apps/web/src/routes/_protected.workspaces/$workspaceId/-hooks/use-create-b-boxes.ts",
+                path: "apps/web/src/components/workspaces/hooks/use-create-b-boxes.ts",
                 reason:
                   "Returned callback identity must stay stable for downstream effect deps while reading latest pending mutation count; callers invoke it directly, not from an effect-installed callback.",
               },
@@ -957,6 +1061,7 @@ export default defineConfig({
     {
       files: [
         "apps/web/src/routes/dev/**/*.{ts,tsx}",
+        "apps/web/src/components/dev/**/*.{ts,tsx}",
         "apps/web/src/components/dev-sidebar-group.tsx",
       ],
       rules: {
@@ -987,6 +1092,12 @@ export default defineConfig({
       },
     },
     {
+      files: [".oxlint-plugins/__fixtures__/require-search-scope.fixture.ts"],
+      rules: {
+        "require-search-scope/require-search-scope": "error",
+      },
+    },
+    {
       files: [
         ".oxlint-plugins/__fixtures__/no-direct-ingestion-checkpoint-write.fixture.ts",
       ],
@@ -1011,6 +1122,57 @@ export default defineConfig({
               {
                 name: "zod",
                 message: "Use 'valibot' instead of 'zod'.",
+              },
+            ],
+          },
+        ],
+      },
+    },
+    {
+      // AI suggestion surfaces are shared lazy components. They can render
+      // while the router is activating a match, so user data must come from
+      // AuthenticatedUserProvider rather than a route-match store.
+      files: ["apps/web/src/components/ai-suggestions/**/*.{ts,tsx}"],
+      rules: {
+        "no-restricted-imports": [
+          "error",
+          {
+            paths: [
+              {
+                name: "zod",
+                message: "Use 'valibot' instead of 'zod'.",
+              },
+              {
+                name: "@tanstack/react-router",
+                importNames: ["getRouteApi", "useRouteContext"],
+                message:
+                  "Shared AI suggestion components must read authenticated user data from '@/lib/authenticated-user-context', not an active route match.",
+              },
+            ],
+            patterns: [
+              {
+                group: ["@/api/*", "@/api/**/*"],
+                message: "Use '@stll/api/types' instead of '@/api/'.",
+              },
+              {
+                group: ["@stll/api", "@stll/api/**", "!@stll/api/types"],
+                message:
+                  "apps/web may only import the public '@stll/api/types' surface.",
+              },
+              {
+                group: [
+                  "@stll/desktop",
+                  "@stll/desktop/**",
+                  "@stll/landing",
+                  "@stll/landing/**",
+                ],
+                message:
+                  "apps/web must not import other app workspaces directly.",
+              },
+              {
+                group: ["@stll/ui/components/date-picker-popover"],
+                message:
+                  "Use '@/components/date-picker-popover' so locale labels are injected.",
               },
             ],
           },
@@ -1191,9 +1353,7 @@ export default defineConfig({
       rules: { "no-physical-properties/no-physical-properties": "off" },
     },
     {
-      files: [
-        "apps/web/src/routes/_protected.workspaces/$workspaceId/-components/pdf/**",
-      ],
+      files: ["apps/web/src/components/pdf/**"],
       rules: {
         "unicorn/prefer-dom-node-remove": "off",
         "unicorn/prefer-dom-node-append": "off",
@@ -1223,7 +1383,7 @@ export default defineConfig({
         "apps/web/src/components/chat-editor-provider.tsx",
         "apps/web/src/components/api-version-mismatch-banner.tsx",
         "apps/web/src/components/selfhost-update-banner.tsx",
-        "apps/web/src/routes/_protected.workspaces/-components/create-matter-dialog.tsx",
+        "apps/web/src/components/workspaces/create-matter-dialog.tsx",
       ],
       rules: {
         "no-bare-chrome-query/no-bare-chrome-query": "error",
@@ -1246,7 +1406,7 @@ export default defineConfig({
     },
     {
       files: [
-        "apps/web/src/routes/_protected.workspaces/$workspaceId/-components/field-value.tsx",
+        "apps/web/src/components/workspaces/field-value.tsx",
         ".oxlint-plugins/__fixtures__/no-workspace-field-value-drift.fixture.tsx",
       ],
       rules: {
@@ -1286,6 +1446,11 @@ export default defineConfig({
           "error",
           {
             allowedFiles: [
+              // Side-effect-free schema modules are the API's environment
+              // boundary. Runtime wrappers import them and instantiate env.
+              "apps/api/src/env-base-schema.ts",
+              "apps/api/src/env-schema.ts",
+              "apps/api/src/env-document-processing-worker.ts",
               "apps/api/src/db-url.ts",
               "apps/api/src/handlers/case-law/ingestion/adapters/utils.ts",
               "apps/api/src/handlers/health/routes.ts",
@@ -1315,6 +1480,11 @@ export default defineConfig({
               // E2E_NETWORK_BASELINE write/rewrite mode switch; e2e infra has
               // no app env module to route through.
               "apps/web/e2e/helpers/network.ts",
+              // Reads E2E_WEB_URL/E2E_API_URL (same contract as
+              // helpers/api.ts) plus the MARKETING_CAPTURE and
+              // MARKETING_THEME scene/theme switches; e2e infra has no app
+              // env module to route through.
+              "apps/web/e2e/marketing/record-product-story.ts",
               "apps/web/e2e/staging/global-setup.ts",
               // Test-only helper: reads PROPERTY_TEST_NUM_RUNS_FACTOR and CI
               // to tune fast-check at assert time. Never imported by runtime
@@ -1363,6 +1533,16 @@ export default defineConfig({
       excludeFiles: ["apps/api/src/**/*.test.ts", "apps/api/src/tests/**/*.ts"],
       rules: {
         "require-query-limit/require-query-limit": "error",
+      },
+    },
+    {
+      // Global search reads through rootDb and therefore must reconstruct
+      // workspace/contact/chat authorization inside every private projection
+      // query. Public case-law search is intentionally outside this rule.
+      files: ["apps/api/src/lib/search/**/*.ts"],
+      excludeFiles: ["apps/api/src/lib/search/**/*.test.ts"],
+      rules: {
+        "require-search-scope/require-search-scope": "error",
       },
     },
     {
@@ -1730,10 +1910,12 @@ export default defineConfig({
         "apps/api/src/handlers/folio-collab/routes.ts",
         "apps/api/src/handlers/health/routes.ts",
         "apps/api/src/handlers/mcp/routes.ts",
+        "apps/api/src/handlers/mcp-app-sandbox/routes.ts",
         "apps/api/src/handlers/mcp-connectors/oauth-client-metadata-route.ts",
         "apps/api/src/handlers/hosted-usage-webhook/routes.ts",
         "apps/api/src/handlers/smoke/routes.ts",
         "apps/api/src/handlers/verify/routes.ts",
+        "apps/api/src/handlers/well-known/routes.ts",
         "apps/api/src/handlers/workspaces/events.ts",
       ],
       rules: {
@@ -1779,6 +1961,7 @@ export default defineConfig({
         "jest/valid-title": "off",
         "no-console": "off",
         "require-await": "off",
+        "typescript/require-await": "off",
         "require-yield": "off",
         "typescript/unbound-method": "off",
         "no-bare-error/no-bare-error": "off",

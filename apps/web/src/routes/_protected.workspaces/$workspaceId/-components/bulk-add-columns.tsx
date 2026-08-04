@@ -26,35 +26,36 @@ import { stellaToast } from "@stll/ui/components/toast";
 import { cn } from "@stll/ui/lib/utils";
 
 import Tooltip from "@/components/tooltip";
-import { detached } from "@/lib/detached";
-import { toSafeId } from "@/lib/safe-id";
-import type { PropertyDependency, WorkspacePropertyOption } from "@/lib/types";
+import { usePropertiesCountLimit } from "@/components/workspaces/hooks/use-limits";
+import { useStartWorkflow } from "@/components/workspaces/hooks/use-start-workflow";
 import {
   COMPOSER_CARD_CLASS,
   ReadingFromRow,
   TypeChipsRow,
   useChipDefinitions,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/properties/composer-primitives";
+} from "@/components/workspaces/properties/composer-primitives";
 import type {
   CreatableContentType,
   FileChip,
   ManualChipOption,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/properties/composer-primitives";
-import { InlineOptionEditor } from "@/routes/_protected.workspaces/$workspaceId/-components/properties/inline-option-editor";
-import { PropertyPromptInput } from "@/routes/_protected.workspaces/$workspaceId/-components/properties/property-input/input";
-import type { PropertyPromptFieldHandle } from "@/routes/_protected.workspaces/$workspaceId/-components/properties/property-input/input";
+} from "@/components/workspaces/properties/composer-primitives";
+import { InlineOptionEditor } from "@/components/workspaces/properties/inline-option-editor";
+import { PropertyPromptInput } from "@/components/workspaces/properties/property-input/input";
+import type { PropertyPromptFieldHandle } from "@/components/workspaces/properties/property-input/input";
 import {
   buildDocTypeGate,
   resolveDocumentTypeClassifier,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/table/group-columns";
-import { usePropertiesCountLimit } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-limits";
-import { useStartWorkflow } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-start-workflow";
+} from "@/components/workspaces/table/group-columns";
+import { useLatestCallback } from "@/hooks/use-latest-callback";
+import { detached } from "@/lib/detached";
+import { toSafeId } from "@/lib/safe-id";
+import type { PropertyDependency, WorkspacePropertyOption } from "@/lib/types";
 import {
   useCreatePropertiesBatch,
   useSuggestPrompt,
-} from "@/routes/_protected.workspaces/$workspaceId/-mutations/properties";
-import type { CreatePropertySpec } from "@/routes/_protected.workspaces/$workspaceId/-mutations/properties";
-import { propertiesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
+} from "@/lib/workspaces/mutations/properties";
+import type { CreatePropertySpec } from "@/lib/workspaces/mutations/properties";
+import { propertiesOptions } from "@/lib/workspaces/queries/properties";
 
 // Sentinel for the "every document type" (ungated) scope; a Select value can't
 // be null, so it stands in and maps back to null.
@@ -512,19 +513,19 @@ const DraftCard = ({
   const chipDefs = useChipDefinitions();
   const suggestPrompt = useSuggestPrompt();
   const editorRef = useRef<Editor | null>(null);
+  const [initialPrompt] = useState(() => draft.prompt);
+  const handlePromptChange = useLatestCallback((next: string) => {
+    onChange({ prompt: next });
+  });
 
   const promptField: PropertyPromptFieldHandle = useMemo(
     () => ({
       name: `draft-${draft.id}`,
-      state: { value: draft.prompt },
-      handleChange: (next) => onChange({ prompt: next }),
+      state: { value: initialPrompt },
+      handleChange: handlePromptChange,
       handleBlur: () => undefined,
     }),
-    // The editor reads `state.value` only on init; subsequent updates
-    // flow through `handleChange`, so a stable handle is fine.
-    // eslint-disable-next-line react/react-compiler -- the exhaustive-deps exception below intentionally opts this editor handle out of compiler memoization
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- draft.prompt/onChange intentionally excluded; the editor reads state.value only on init, so the handle must stay stable across keystrokes
-    [draft.id],
+    [draft.id, handlePromptChange, initialPrompt],
   );
 
   const handleMentions = useCallback(

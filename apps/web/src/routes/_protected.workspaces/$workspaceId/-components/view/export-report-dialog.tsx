@@ -35,7 +35,7 @@ import { toAPIError, unwrapEden } from "@/lib/errors/api";
 import { userErrorMessage } from "@/lib/errors/user-safe";
 import { toSafeId } from "@/lib/safe-id";
 import type { WorkspaceView } from "@/lib/types";
-import { reportExportsKeys } from "@/routes/_protected.workspaces/$workspaceId/-queries/report-exports";
+import { reportExportsKeys } from "@/lib/workspaces/queries/report-exports";
 
 import { ReportExportHistory } from "./report-export-history";
 import {
@@ -286,10 +286,9 @@ const ExportReportDialogBody = ({
 
   // "Customize" is offered only for a built-in: cloning it into the org's
   // templates is the one way to see and edit the layout in Template Studio.
-  const selectedBuiltinKey =
-    resolvedValue && resolvedValue.startsWith(BUILTIN_PREFIX)
-      ? resolvedValue.slice(BUILTIN_PREFIX.length)
-      : null;
+  const selectedBuiltinKey = resolvedValue?.startsWith(BUILTIN_PREFIX)
+    ? resolvedValue.slice(BUILTIN_PREFIX.length)
+    : null;
 
   const handleCustomize = async () => {
     if (selectedBuiltinKey === null) {

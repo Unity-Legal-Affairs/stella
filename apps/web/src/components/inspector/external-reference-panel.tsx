@@ -34,8 +34,8 @@ import { MessageResponse } from "@/components/ai-elements/message";
 import { FileViewerWithAI } from "@/components/ai-suggestions/file-viewer-with-ai";
 import { useExternalSourceStore } from "@/components/chat/external-source-store";
 import { findMcpConnectorIconHref } from "@/components/inspector/external-source-icon";
-import type { InspectorTab } from "@/components/inspector/inspector-store";
 import { InspectorTabHeader } from "@/components/inspector/inspector-tab-header";
+import type { InspectorTab } from "@/components/inspector/inspector-tabs-store";
 import { MeasuredPdfProvider } from "@/components/inspector/measured-pdf-provider";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { api } from "@/lib/api";
@@ -46,11 +46,11 @@ import { createChatThreadId, toChatThreadId } from "@/lib/chat-thread-ref";
 import { detached } from "@/lib/detached";
 import { APIError, toAPIError } from "@/lib/errors/api";
 import { fetchWithTimeout } from "@/lib/fetch";
+import { mcpConnectorsOptions } from "@/lib/knowledge/queries";
 import { PDFPage } from "@/lib/pdf/pdf-page";
 import type { PDFPageFallback } from "@/lib/pdf/pdf-page";
 import { PDFViewport } from "@/lib/pdf/pdf-viewport";
 import { sanitizeHref } from "@/lib/sanitize-href";
-import { mcpConnectorsOptions } from "@/routes/_protected.knowledge/-queries";
 
 const SERVER_PREVIEW_ERROR_THRESHOLD = 500;
 
@@ -569,9 +569,9 @@ export const ExternalReferencePanel = ({
       tab.sourceToolName !== undefined ||
       storedSource?.connectorSlug !== undefined ||
       storedSource?.sourceToolName !== undefined);
-  // oxlint-disable-next-line @tanstack/query/exhaustive-deps -- translation function is a stable runtime service, not preview cache identity
+  const previewErrorTitle = t("common.somethingWentWrong");
   const { data: fetchedPreview, isLoading: previewLoading } = useQuery({
-    queryKey: ["external-preview", tab.url],
+    queryKey: ["external-preview", tab.url, previewErrorTitle],
     queryFn: async ({ signal }) => {
       const response = await api["external-preview"].get({
         query: { url: tab.url },
@@ -588,7 +588,7 @@ export const ExternalReferencePanel = ({
           if (!toastedPreviewFailures.has(toastKey)) {
             toastedPreviewFailures.add(toastKey);
             stellaToast.add({
-              title: t("common.somethingWentWrong"),
+              title: previewErrorTitle,
               description: error.message,
               type: "error",
             });
@@ -823,7 +823,6 @@ export const ExternalReferencePanel = ({
           </div>
           {findOpen && (
             <div className="flex h-10 shrink-0 items-center gap-1 border-b px-2">
-              <SearchIcon className="text-muted-foreground size-3.5 shrink-0" />
               <Input
                 aria-label={t("folio.findReplace.findText")}
                 className="h-7 flex-1 rounded-md"

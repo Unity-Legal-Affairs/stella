@@ -20,11 +20,15 @@ import type { TanStackAIAnalyticsCallbacks } from "@/api/lib/analytics/tanstack-
 import type { SafeId } from "@/api/lib/branded-types";
 import { HandlerError } from "@/api/lib/errors/tagged-errors";
 import { logger } from "@/api/lib/observability/logger";
-import { providerSafeJsonSchemaOptionsForTanStackProvider } from "@/api/lib/provider-safe-json-schema";
+import {
+  providerSafeJsonSchemaOptionsForTanStackProvider,
+  type ProviderSafeJsonSchemaProjectionOptions,
+} from "@/api/lib/provider-safe-json-schema";
 import { tanStackCacheControl } from "@/api/lib/tanstack-ai-caching";
 import {
   getTanStackTextModelById,
   getTanStackTextModelForRole,
+  isMockTextAdapterActive,
 } from "@/api/lib/tanstack-ai-models";
 import type {
   ResolvedTanStackTextModel,
@@ -333,6 +337,14 @@ const providerStatusCode = (error: Record<string, unknown>): number | null => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+const structuredOutputProjectionOptions = (
+  provider: string,
+): ProviderSafeJsonSchemaProjectionOptions =>
+  providerSafeJsonSchemaOptionsForTanStackProvider(
+    provider,
+    isMockTextAdapterActive() ? "mock-structured-output" : "structured-output",
+  );
+
 export const generateTanStackObjectForRole = async <
   TSchema extends v.GenericSchema,
 >({
@@ -348,7 +360,7 @@ export const generateTanStackObjectForRole = async <
     : undefined;
   const tanStackOutputSchema = toTanStackValibotSchema(
     outputSchema,
-    providerSafeJsonSchemaOptionsForTanStackProvider(model.provider),
+    structuredOutputProjectionOptions(model.provider),
   );
 
   const output = await withStandardServiceTierFallback({
@@ -436,7 +448,7 @@ const streamTanStackStructuredOutput = async function* <
   let rawJson = "";
   const tanStackOutputSchema = toTanStackValibotSchema(
     outputSchema,
-    providerSafeJsonSchemaOptionsForTanStackProvider(model.provider),
+    structuredOutputProjectionOptions(model.provider),
   );
 
   const stream = iterateWithStandardServiceTierFallback({
@@ -631,8 +643,8 @@ export const mergeGenerationOptions = ({
 }): TanStackModelOptions => {
   // Caller temperature overrides only apply where the role builder
   // itself emitted a temperature. Builder omission is always
-  // deliberate — the model rejects sampling overrides
-  // (`MODEL_TEMPERATURE_SUPPORT`), the id is uncatalogued, or the
+  // deliberate — the model rejects, deprecates, or ignores sampling
+  // overrides (`MODEL_TEMPERATURE_POLICIES`), the id is uncatalogued, or the
   // role runs a thinking/reasoning mode that is incompatible with
   // temperature (Anthropic extended thinking rejects it even on
   // models that accept temperature otherwise). The suppression is

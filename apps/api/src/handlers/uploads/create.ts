@@ -16,21 +16,8 @@ import {
   pendingUploads,
   type PendingUploadPurposeData,
 } from "@/api/db/schema";
-import { resolveUploadMime } from "@/api/handlers/files/utils";
 import { validateAgentSkill } from "@/api/handlers/uploads/agent-skill";
-import {
-  checkEntityCreateCapacityForInsert,
-  checkEntityCreateTargetForInsert,
-  entityCreateWriteErrorMessage,
-  type EntityCreateWriteFailureStatus,
-  validateEntityCreate,
-} from "@/api/handlers/uploads/entity-create";
 import { validateEntityVersion } from "@/api/handlers/uploads/entity-version";
-import {
-  PRESIGN_URL_EXPIRY_SECONDS,
-  sha256HexToBase64,
-  tmpUploadKey,
-} from "@/api/handlers/uploads/lib";
 import {
   authorizeUploadPurpose,
   uploadRoutePermission,
@@ -40,8 +27,21 @@ import type { HandlerConfig } from "@/api/lib/api-handlers";
 import { createSafeId, type SafeId } from "@/api/lib/branded-types";
 import { tDefaultVarchar, tSafeId } from "@/api/lib/custom-schema";
 import { HandlerError } from "@/api/lib/errors/tagged-errors";
+import { resolveUploadMime } from "@/api/lib/files/utils";
 import { FILE_SIZE_LIMIT_BYTES } from "@/api/lib/limits";
 import { presignUploadUrl } from "@/api/lib/s3-presign";
+import {
+  checkEntityCreateCapacityForInsert,
+  checkEntityCreateTargetForInsert,
+  entityCreateWriteErrorMessage,
+  type EntityCreateWriteFailureStatus,
+  validateEntityCreate,
+} from "@/api/lib/uploads/entity-create";
+import {
+  PRESIGN_URL_EXPIRY_SECONDS,
+  sha256HexToBase64,
+  tmpUploadKey,
+} from "@/api/lib/uploads/runtime";
 
 const baseFileMetadataSchema = {
   name: tDefaultVarchar,
@@ -171,21 +171,27 @@ const presignUpload = createSafeHandler(
         propertyId: purposeBody.propertyId,
         parentId: purposeBody.parentId ?? null,
       });
-      if (Result.isError(validation)) {
+      if (validation.status === "error") {
         return validation;
       }
-    } else {
-      const validation =
-        purposeBody.purpose === "entity_version"
-          ? yield* validateEntityVersion({
-              safeDb,
-              workspaceId,
-              entityId: purposeBody.entityId,
-            })
-          : yield* validateAgentSkill({
-              memberRole,
-              scope: purposeBody.scope,
-            });
+    }
+
+    if (purposeBody.purpose === "entity_version") {
+      const validation = yield* validateEntityVersion({
+        safeDb,
+        workspaceId,
+        entityId: purposeBody.entityId,
+      });
+      if (validation.status === "error") {
+        return validation;
+      }
+    }
+
+    if (purposeBody.purpose === "agent_skill") {
+      const validation = validateAgentSkill({
+        memberRole,
+        scope: purposeBody.scope,
+      });
       if (validation.status === "error") {
         return validation;
       }

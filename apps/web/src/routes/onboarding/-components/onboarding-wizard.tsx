@@ -29,13 +29,13 @@ import { ThemePicker } from "@/components/theme-picker";
 import { useAnalytics } from "@/lib/analytics/provider";
 import { api } from "@/lib/api";
 import { authClient } from "@/lib/auth";
+import { rootKeys, sessionOptions } from "@/lib/auth-queries";
 import { detached } from "@/lib/detached";
 import { toAPIError } from "@/lib/errors/api";
 import { toAuthClientError } from "@/lib/errors/auth";
 import type { PracticeJurisdiction } from "@/lib/jurisdictions";
 import { suggestedCountryCodes as getSuggestedCountryCodes } from "@/lib/jurisdictions";
-import { rootKeys, sessionOptions } from "@/routes/-queries";
-import { aiConfigKeys } from "@/routes/_protected.organization/-ai-config-queries";
+import { aiConfigKeys } from "@/lib/organization/ai-config-queries";
 import { CatalogueDetailPreview } from "@/routes/onboarding/-components/catalogue-detail-preview";
 import { CatalogueStackPreview } from "@/routes/onboarding/-components/catalogue-stack-preview";
 import {
@@ -127,6 +127,7 @@ export const OnboardingWizard = () => {
   const suggestedCountryCodes = getSuggestedCountryCodes({
     email: userEmail,
     locale: navigatorLocale,
+    detectedCountry: sessionData?.user.detectedCountry,
   });
   const [jurisdictionSuggestionApplied, setJurisdictionSuggestionApplied] =
     useState(false);

@@ -1,3 +1,4 @@
+import { panic } from "better-result";
 import { and, asc, eq, gt, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 
@@ -10,22 +11,31 @@ import type {
 } from "@/api/db/schema-validators";
 import { arrayOrEmpty } from "@/api/lib/array";
 import type { SafeId } from "@/api/lib/branded-types";
+import { redistributableSourceJoin } from "@/api/lib/case-law/search-sql";
 import { compareCodepoint } from "@/api/lib/collation";
+import { CHAT_SEARCH_DISPLAY_METADATA_GENERATION } from "@/api/lib/search/chat-search-generation";
+import { chatThreadScopeSql } from "@/api/lib/search/chat-thread-scope-sql";
 import {
   contactWorkspaceAccessSql,
-  resolveWorkspaceScope,
+  searchDocumentsAccessSql,
+  workspaceSearchDocumentsAccessSql,
 } from "@/api/lib/search/contact-workspace-access-sql";
-import type { WorkspaceScopeArgs } from "@/api/lib/search/contact-workspace-access-sql";
-import { decodeCursor } from "@/api/lib/search/cursor";
 import { mapEntityHit } from "@/api/lib/search/global-search-mappers";
 import {
   escapeAndHighlight,
   TS_HEADLINE_CONFIG,
 } from "@/api/lib/search/highlight";
 import {
-  GLOBAL_SEARCH_MAX_OFFSET,
-  resolveGlobalSearchNextCursor,
+  compareScoredSearchHits,
+  GLOBAL_SEARCH_RESULT_LIMIT,
+  globalSearchCursorSql,
+  paginateScoredSearchHits,
+  parseGlobalSearchCursor,
 } from "@/api/lib/search/pagination";
+import {
+  buildSearchPreviewPassages,
+  buildSearchPreviewPassageValueRows,
+} from "@/api/lib/search/preview-passages";
 import { buildSearchTsQuery } from "@/api/lib/search/query";
 import { typedPgArray } from "@/api/lib/search/sql";
 import type {
@@ -37,10 +47,12 @@ import type {
   GlobalSearchResultType,
   MatterGlobalSearchHit,
 } from "@/api/lib/search/types";
+import { DOCX_MIME_TYPE, PDF_MIME_TYPE } from "@/api/mime-types";
 
 const REINDEX_BATCH_SIZE = 100;
 const WORKSPACE_REINDEX_CONCURRENCY = 4;
 const GLOBAL_SEARCH_FACET_LIMIT = 20;
+const MATTER_RELEVANCE_BOOST = 0.15;
 
 type RawRow = Record<string, unknown>;
 type CountRow = { total?: unknown };
@@ -170,18 +182,34 @@ const NON_ENTITY_TYPES: ReadonlySet<GlobalSearchResultType> = new Set([
   "case-law",
   "chat",
 ]);
+const NATIVE_PREVIEW_MIME_TYPES = [PDF_MIME_TYPE, DOCX_MIME_TYPE] as const;
 
 const hasSelectedEntityType = (selected: ReadonlySet<GlobalSearchResultType>) =>
   selected.size === 0 ||
   [...selected].some((type) => !NON_ENTITY_TYPES.has(type));
 
-const fileFieldJoin = sql`
+const fileFieldJoin = (mimeTypes: readonly string[]) => {
+  const mimeFilter =
+    mimeTypes.length > 0
+      ? sql`AND files.mime_type = ANY(${typedPgArray(mimeTypes, "text")})`
+      : sql``;
+
+  return sql`
   LEFT JOIN LATERAL (
-    SELECT
-      (array_agg(DISTINCT files.mime_type ORDER BY files.mime_type))[1] AS mime_type,
-      array_agg(DISTINCT files.mime_type ORDER BY files.mime_type) AS mime_types
-    FROM (
-      SELECT field_content.content ->> 'mimeType' AS mime_type
+    WITH files AS (
+      SELECT
+        f.id AS field_id,
+        f.property_id,
+        field_content.content ->> 'mimeType' AS mime_type,
+        EXISTS (
+          SELECT 1
+          FROM extracted_content ec
+          WHERE ec.entity_id = sd.entity_id
+            AND ec.organization_id = sd.organization_id
+            AND ec.workspace_id = sd.workspace_id
+            AND ec.source_entity_version_id = e.current_version_id
+            AND ec.source_field_id = f.id
+        ) AS is_extracted_source
       FROM fields f
       CROSS JOIN LATERAL (
         SELECT CASE jsonb_typeof(f.content)
@@ -194,9 +222,26 @@ const fileFieldJoin = sql`
         AND f.entity_version_id = e.current_version_id
         AND field_content.content ->> 'type' = 'file'
         AND nullif(field_content.content ->> 'mimeType', '') IS NOT NULL
-    ) files
+    )
+    SELECT
+      files.field_id,
+      files.property_id,
+      files.mime_type,
+      (
+        SELECT array_agg(DISTINCT available.mime_type ORDER BY available.mime_type)
+        FROM files available
+      ) AS mime_types
+    FROM files
+    WHERE TRUE
+      ${mimeFilter}
+    ORDER BY
+      files.is_extracted_source DESC,
+      (files.mime_type = ANY(${typedPgArray(NATIVE_PREVIEW_MIME_TYPES, "text")})) DESC,
+      files.field_id ASC
+    LIMIT 1
   ) file_field ON true
 `;
+};
 
 const caseLawBodyPreviewJoin = sql`
   LEFT JOIN LATERAL (
@@ -220,57 +265,6 @@ const headlineRegconfig = sql`
   'public.stella_unaccent'::regconfig
 `;
 
-const workspaceAccessSql = ({
-  column = sql`workspace_id`,
-  ...scope
-}: WorkspaceScopeArgs & { column?: SQL }) => {
-  const effective = resolveWorkspaceScope(scope);
-  if (effective === null) {
-    return sql`AND false`;
-  }
-  return sql`AND ${column} = ANY(${typedPgArray(effective, "uuid")})`;
-};
-
-type ChatScopeArgs = {
-  userId: SafeId<"user">;
-  organizationId: SafeId<"organization">;
-  accessibleWorkspaceIds: readonly SafeId<"workspace">[];
-  selectedWorkspaceIds: readonly SafeId<"workspace">[];
-};
-
-// Chat threads are private to the calling user, and `searchGlobal`
-// runs on the RLS-bypassing root connection, so this predicate
-// reproduces the chat-thread RLS scope (db/rls.ts) explicitly. It
-// joins back to `chat_threads t`: the row is visible only to its
-// owner, in its organization, and only while every embedded
-// workspace (`data_workspace_ids`) stays within the caller's access.
-export const chatThreadScopeSql = ({
-  userId,
-  organizationId,
-  accessibleWorkspaceIds,
-  selectedWorkspaceIds,
-}: ChatScopeArgs): SQL => {
-  const accessArray = typedPgArray(accessibleWorkspaceIds, "uuid");
-  const selectedArray = typedPgArray(selectedWorkspaceIds, "uuid");
-  const selectedFilter =
-    selectedWorkspaceIds.length > 0
-      ? sql`AND (
-          t.workspace_id = ANY(${selectedArray})
-          OR t.data_workspace_ids && ${selectedArray}
-        )`
-      : sql``;
-  return sql`
-    t.user_id = ${userId}
-    AND t.organization_id = ${organizationId}
-    AND (t.workspace_id IS NULL OR t.workspace_id = ANY(${accessArray}))
-    AND (
-      cardinality(t.data_workspace_ids) = 0
-      OR t.data_workspace_ids <@ ${accessArray}
-    )
-    ${selectedFilter}
-  `;
-};
-
 const mapMatterHit = (row: RawRow): ScoredGlobalSearchHit => {
   const workspaceId = String(row["id"]);
   const hit: MatterGlobalSearchHit = {
@@ -284,7 +278,7 @@ const mapMatterHit = (row: RawRow): ScoredGlobalSearchHit => {
     color: toNullableString(row["color"]),
   };
 
-  return { hit, score: Number(row["score"]) + 0.15 };
+  return { hit, score: Number(row["score"]) };
 };
 
 const mapContactHit = (row: RawRow): ScoredGlobalSearchHit => {
@@ -411,23 +405,8 @@ const toMimeTypeFacetMap = (
   return map;
 };
 
-const globalSearchOffset = (cursor: string | undefined): number => {
-  const parsedCursor = cursor ? decodeCursor(cursor) : null;
-  if (parsedCursor?.id !== "global") {
-    return 0;
-  }
-
-  return Math.max(
-    0,
-    Math.min(GLOBAL_SEARCH_MAX_OFFSET, Math.floor(parsedCursor.score)),
-  );
-};
-
 type FilterFragmentInput = {
   query: string;
-  organizationId: SafeId<"organization">;
-  accessibleWorkspaceIds: readonly SafeId<"workspace">[];
-  selectedWorkspaceIds: readonly SafeId<"workspace">[];
   types: readonly GlobalSearchResultType[];
   editedByUserIds: readonly string[];
   mimeTypes: readonly string[];
@@ -444,9 +423,6 @@ type FilterFragmentInput = {
  */
 const buildSearchFilterFragments = ({
   query,
-  organizationId,
-  accessibleWorkspaceIds,
-  selectedWorkspaceIds,
   types,
   editedByUserIds,
   mimeTypes,
@@ -456,33 +432,13 @@ const buildSearchFilterFragments = ({
   const selected = selectedTypes(types);
   const hasEditorFilter = editedByUserIds.length > 0;
   const hasMimeTypeFilter = mimeTypes.length > 0;
+  const hasSearchQuery = query.trim().length > 0;
   const restrictToEntities = hasEditorFilter || hasMimeTypeFilter;
   const tsQuery = buildSearchTsQuery(query);
-
-  const workspaceScope = { accessibleWorkspaceIds, selectedWorkspaceIds };
-  // Workspace-facet variants ignore the user's workspace selection so all
-  // accessible workspaces stay visible (you can always tick a sibling).
-  const accessOnlyScope = { accessibleWorkspaceIds, selectedWorkspaceIds: [] };
-  const entityWorkspaceFilter = workspaceAccessSql({
-    column: sql`sd.workspace_id`,
-    ...workspaceScope,
-  });
-  const entityWorkspaceFacetFilter = workspaceAccessSql({
-    column: sql`sd.workspace_id`,
-    ...accessOnlyScope,
-  });
-  const matterWorkspaceFilter = workspaceAccessSql({
-    column: sql`wsd.workspace_id`,
-    ...workspaceScope,
-  });
-  const matterWorkspaceFacetFilter = workspaceAccessSql({
-    column: sql`wsd.workspace_id`,
-    ...accessOnlyScope,
-  });
-  const contactWorkspaceFilter = contactWorkspaceAccessSql({
-    organizationId,
-    ...workspaceScope,
-  });
+  const normalizedUpdatedFrom =
+    updatedFrom === undefined ? undefined : new Date(updatedFrom).toISOString();
+  const normalizedUpdatedTo =
+    updatedTo === undefined ? undefined : new Date(updatedTo).toISOString();
 
   const entityTypes = [...selected].filter(
     (type) => !NON_ENTITY_TYPES.has(type),
@@ -494,27 +450,92 @@ const buildSearchFilterFragments = ({
   );
   const entityMimeFilter = sqlWhen(
     hasMimeTypeFilter,
-    () => sql`AND file_field.mime_types && ${typedPgArray(mimeTypes, "text")}`,
+    () => sql`AND file_field.field_id IS NOT NULL`,
   );
   const updatedRangeFilter = (column: SQL): SQL => {
     const fragments: SQL[] = [];
-    if (updatedFrom !== undefined) {
-      fragments.push(sql`AND ${column} >= ${updatedFrom}`);
+    if (normalizedUpdatedFrom !== undefined) {
+      fragments.push(sql`AND ${column} >= ${normalizedUpdatedFrom}`);
     }
-    if (updatedTo !== undefined) {
-      fragments.push(sql`AND ${column} <= ${updatedTo}`);
+    if (normalizedUpdatedTo !== undefined) {
+      fragments.push(sql`AND ${column} <= ${normalizedUpdatedTo}`);
     }
     return fragments.length > 0 ? sql.join(fragments, sql` `) : sql``;
   };
   const entityUpdatedFilter = updatedRangeFilter(sql`sd.updated_at`);
   const matterUpdatedFilter = updatedRangeFilter(sql`wsd.updated_at`);
   const contactUpdatedFilter = updatedRangeFilter(sql`csd.updated_at`);
-  const caseLawUpdatedFilter = updatedRangeFilter(sql`clsd.updated_at`);
-  const chatUpdatedFilter = updatedRangeFilter(sql`cst.updated_at`);
+  const caseLawUpdatedFilter = updatedRangeFilter(sql`d.updated_at`);
+  const chatUpdatedFilter = updatedRangeFilter(sql`t.updated_at`);
+  const entityTextSearchFilter = sqlWhen(
+    hasSearchQuery,
+    () => sql`AND sd.tsv @@ ${tsQuery}`,
+  );
+  const matterTextSearchFilter = sqlWhen(
+    hasSearchQuery,
+    () => sql`AND wsd.tsv @@ ${tsQuery}`,
+  );
+  const contactTextSearchFilter = sqlWhen(
+    hasSearchQuery,
+    () => sql`AND csd.tsv @@ ${tsQuery}`,
+  );
+  const caseLawTextSearchFilter = sqlWhen(
+    hasSearchQuery,
+    () => sql`AND clsd.tsv @@ ${tsQuery}`,
+  );
+  const chatTextSearchFilter = sqlWhen(
+    hasSearchQuery,
+    () => sql`AND cst.tsv @@ ${tsQuery}`,
+  );
+  const searchHeadline = (document: SQL): SQL =>
+    hasSearchQuery
+      ? sql`ts_headline(
+          ${headlineRegconfig},
+          ${document},
+          ${tsQuery},
+          ${TS_HEADLINE_CONFIG}
+        ) AS headline`
+      : sql`NULL::text AS headline`;
+  const searchScoreValue = ({
+    tsv,
+    updatedAt,
+    relevanceBoost,
+  }: {
+    tsv: SQL;
+    updatedAt: SQL;
+    relevanceBoost?: number | undefined;
+  }): SQL => {
+    if (!hasSearchQuery) {
+      return sql`extract(epoch from ${updatedAt})::float8 * 1000`;
+    }
+    if (relevanceBoost === undefined) {
+      return sql`ts_rank(${tsv}, ${tsQuery})::float8`;
+    }
+    return sql`ts_rank(${tsv}, ${tsQuery})::float8 + ${relevanceBoost}::float8`;
+  };
+  const searchScore = (options: {
+    tsv: SQL;
+    updatedAt: SQL;
+    relevanceBoost?: number | undefined;
+  }): SQL => sql`${searchScoreValue(options)} AS score`;
+  const searchOrderBy = ({
+    id,
+    updatedAt,
+  }: {
+    id: SQL;
+    updatedAt: SQL;
+  }): SQL =>
+    hasSearchQuery
+      ? sql`score DESC, ${id} DESC`
+      : sql`${updatedAt} DESC, ${id} DESC`;
   const entityTypeFilter = sqlWhen(
     selected.size > 0,
     () => sql`AND sd.kind = ANY(${typedPgArray(entityTypes, "text")})`,
   );
+  const entityTypeFacetFilter =
+    selected.size > 0 && !hasSearchQuery && normalizedUpdatedFrom === undefined
+      ? entityTypeFilter
+      : sql``;
 
   return {
     selected,
@@ -522,11 +543,6 @@ const buildSearchFilterFragments = ({
     hasMimeTypeFilter,
     restrictToEntities,
     tsQuery,
-    entityWorkspaceFilter,
-    entityWorkspaceFacetFilter,
-    matterWorkspaceFilter,
-    matterWorkspaceFacetFilter,
-    contactWorkspaceFilter,
     entityEditorFilter,
     entityMimeFilter,
     entityUpdatedFilter,
@@ -534,7 +550,18 @@ const buildSearchFilterFragments = ({
     contactUpdatedFilter,
     caseLawUpdatedFilter,
     chatUpdatedFilter,
+    entityTextSearchFilter,
+    matterTextSearchFilter,
+    contactTextSearchFilter,
+    caseLawTextSearchFilter,
+    chatTextSearchFilter,
+    searchHeadline,
+    searchScore,
+    searchScoreValue,
+    searchOrderBy,
+    hasSearchQuery,
     entityTypeFilter,
+    entityTypeFacetFilter,
   };
 };
 
@@ -552,21 +579,47 @@ export const searchGlobal = async ({
   cursor,
   limit,
 }: GlobalSearchQuery): Promise<GlobalSearchResult> => {
-  const offset = globalSearchOffset(cursor);
-  const fetchLimit = offset + limit;
+  const parsedCursor = parseGlobalSearchCursor(cursor);
+  const pagination = (() => {
+    switch (parsedCursor.type) {
+      case "initial":
+        return {
+          isFirstPage: true,
+          legacyOffset: null,
+          searchCursor: null,
+          seen: 0,
+        };
+      case "keyset":
+        return {
+          isFirstPage: false,
+          legacyOffset: null,
+          searchCursor: parsedCursor.cursor,
+          seen: parsedCursor.cursor.seen,
+        };
+      case "legacy":
+        return {
+          isFirstPage: false,
+          legacyOffset: parsedCursor.offset,
+          searchCursor: null,
+          seen: parsedCursor.offset,
+        };
+      case "invalid":
+        return panic("searchGlobal received an invalid cursor");
+      default: {
+        const exhaustive: never = parsedCursor;
+        return exhaustive;
+      }
+    }
+  })();
+  const { isFirstPage, legacyOffset, searchCursor, seen } = pagination;
+  const pageLimit = Math.min(limit, GLOBAL_SEARCH_RESULT_LIMIT - seen);
+  const fetchLimit = (legacyOffset ?? 0) + pageLimit + 1;
   // Counts and facets are computed only on the first page. Subsequent
   // pages reuse the values the client already has, saving ~7 of the
   // 15 SQL round-trips per request.
-  const isFirstPage = offset === 0;
   const {
     selected,
     restrictToEntities,
-    tsQuery,
-    entityWorkspaceFilter,
-    entityWorkspaceFacetFilter,
-    matterWorkspaceFilter,
-    matterWorkspaceFacetFilter,
-    contactWorkspaceFilter,
     entityEditorFilter,
     entityMimeFilter,
     entityUpdatedFilter,
@@ -574,17 +627,48 @@ export const searchGlobal = async ({
     contactUpdatedFilter,
     caseLawUpdatedFilter,
     chatUpdatedFilter,
+    entityTextSearchFilter,
+    matterTextSearchFilter,
+    contactTextSearchFilter,
+    caseLawTextSearchFilter,
+    chatTextSearchFilter,
+    searchHeadline,
+    searchScore,
+    searchScoreValue,
+    searchOrderBy,
+    hasSearchQuery,
     entityTypeFilter,
+    entityTypeFacetFilter,
   } = buildSearchFilterFragments({
     query,
-    organizationId,
-    accessibleWorkspaceIds,
-    selectedWorkspaceIds,
     types,
     editedByUserIds,
     mimeTypes,
     updatedFrom,
     updatedTo,
+  });
+  const entityWorkspaceFilter = searchDocumentsAccessSql({
+    accessibleWorkspaceIds,
+    selectedWorkspaceIds,
+  });
+  const entityWorkspaceFacetFilter = searchDocumentsAccessSql({
+    accessibleWorkspaceIds,
+    selectedWorkspaceIds: [],
+  });
+  const selectedFileFieldJoin = fileFieldJoin(mimeTypes);
+  const allFileFieldJoin = fileFieldJoin([]);
+  const matterWorkspaceFilter = workspaceSearchDocumentsAccessSql({
+    accessibleWorkspaceIds,
+    selectedWorkspaceIds,
+  });
+  const matterWorkspaceFacetFilter = workspaceSearchDocumentsAccessSql({
+    accessibleWorkspaceIds,
+    selectedWorkspaceIds: [],
+  });
+  const contactWorkspaceFilter = contactWorkspaceAccessSql({
+    organizationId,
+    accessibleWorkspaceIds,
+    selectedWorkspaceIds,
   });
 
   const entityPromise = rowsWhen(hasSelectedEntityType(selected), () =>
@@ -597,14 +681,11 @@ export const searchGlobal = async ({
         sd.title,
         editor.name AS last_edited_by_name,
         editor.image AS last_edited_by_image,
+        file_field.field_id AS file_field_id,
+        file_field.property_id AS file_property_id,
         file_field.mime_type,
-        ts_headline(
-          ${headlineRegconfig},
-          sd.title || ' ' || left(sd.searchable_text, 2000),
-          ${tsQuery},
-          ${TS_HEADLINE_CONFIG}
-        ) AS headline,
-        ts_rank(sd.tsv, ${tsQuery})::float8 AS score,
+        ${searchHeadline(sql`sd.title || ' ' || left(sd.searchable_text, 2000)`)},
+        ${searchScore({ tsv: sql`sd.tsv`, updatedAt: sql`sd.updated_at` })},
         sd.updated_at
       FROM search_documents sd
       JOIN workspaces w ON w.id = sd.workspace_id
@@ -612,15 +693,23 @@ export const searchGlobal = async ({
         ON e.id = sd.entity_id
         AND e.workspace_id = sd.workspace_id
       LEFT JOIN "user" editor ON editor.id = e.last_edited_by
-      ${fileFieldJoin}
+      ${selectedFileFieldJoin}
       WHERE sd.organization_id = ${organizationId}
-        ${entityWorkspaceFilter}
         ${entityTypeFilter}
         ${entityEditorFilter}
         ${entityMimeFilter}
         ${entityUpdatedFilter}
-        AND sd.tsv @@ ${tsQuery}
-      ORDER BY score DESC, sd.entity_id DESC
+        ${entityTextSearchFilter}
+        ${entityWorkspaceFilter}
+        ${globalSearchCursorSql({
+          cursor: searchCursor,
+          score: searchScoreValue({
+            tsv: sql`sd.tsv`,
+            updatedAt: sql`sd.updated_at`,
+          }),
+          id: sql`'entity:' || sd.entity_id::text`,
+        })}
+      ORDER BY ${searchOrderBy({ id: sql`sd.entity_id`, updatedAt: sql`sd.updated_at` })}
       LIMIT ${fetchLimit}
     `),
   );
@@ -633,21 +722,29 @@ export const searchGlobal = async ({
         wsd.workspace_id AS id,
         wsd.title,
         w.color,
-        ts_headline(
-          ${headlineRegconfig},
-          wsd.title || ' ' || left(wsd.searchable_text, 2000),
-          ${tsQuery},
-          ${TS_HEADLINE_CONFIG}
-        ) AS headline,
-        ts_rank(wsd.tsv, ${tsQuery})::float8 AS score,
+        ${searchHeadline(sql`wsd.title || ' ' || left(wsd.searchable_text, 2000)`)},
+        ${searchScore({
+          tsv: sql`wsd.tsv`,
+          updatedAt: sql`wsd.updated_at`,
+          relevanceBoost: MATTER_RELEVANCE_BOOST,
+        })},
         wsd.updated_at
       FROM workspace_search_documents wsd
       JOIN workspaces w ON w.id = wsd.workspace_id
       WHERE wsd.organization_id = ${organizationId}
-        ${matterWorkspaceFilter}
         ${matterUpdatedFilter}
-        AND wsd.tsv @@ ${tsQuery}
-      ORDER BY score DESC, wsd.workspace_id DESC
+        ${matterTextSearchFilter}
+        ${matterWorkspaceFilter}
+        ${globalSearchCursorSql({
+          cursor: searchCursor,
+          score: searchScoreValue({
+            tsv: sql`wsd.tsv`,
+            updatedAt: sql`wsd.updated_at`,
+            relevanceBoost: MATTER_RELEVANCE_BOOST,
+          }),
+          id: sql`'matter:' || wsd.workspace_id::text`,
+        })}
+      ORDER BY ${searchOrderBy({ id: sql`wsd.workspace_id`, updatedAt: sql`wsd.updated_at` })}
       LIMIT ${fetchLimit}
     `),
   );
@@ -662,20 +759,23 @@ export const searchGlobal = async ({
         csd.contact_id AS id,
         csd.contact_type,
         csd.title,
-        ts_headline(
-          ${headlineRegconfig},
-          csd.title || ' ' || left(csd.searchable_text, 2000),
-          ${tsQuery},
-          ${TS_HEADLINE_CONFIG}
-        ) AS headline,
-        ts_rank(csd.tsv, ${tsQuery})::float8 AS score,
+        ${searchHeadline(sql`csd.title || ' ' || left(csd.searchable_text, 2000)`)},
+        ${searchScore({ tsv: sql`csd.tsv`, updatedAt: sql`csd.updated_at` })},
         csd.updated_at
       FROM contact_search_documents csd
       WHERE csd.organization_id = ${organizationId}
-        ${contactWorkspaceFilter}
         ${contactUpdatedFilter}
-        AND csd.tsv @@ ${tsQuery}
-      ORDER BY score DESC, csd.contact_id DESC
+        ${contactTextSearchFilter}
+        ${contactWorkspaceFilter}
+        ${globalSearchCursorSql({
+          cursor: searchCursor,
+          score: searchScoreValue({
+            tsv: sql`csd.tsv`,
+            updatedAt: sql`csd.updated_at`,
+          }),
+          id: sql`'contact:' || csd.contact_id::text`,
+        })}
+      ORDER BY ${searchOrderBy({ id: sql`csd.contact_id`, updatedAt: sql`csd.updated_at` })}
       LIMIT ${fetchLimit}
     `),
   );
@@ -690,20 +790,25 @@ export const searchGlobal = async ({
         d.court,
         d.country,
         d.decision_date,
-        ts_headline(
-          ${headlineRegconfig},
-          coalesce(nullif(body_preview.text, ''), d.fulltext, clsd.searchable_text),
-          ${tsQuery},
-          ${TS_HEADLINE_CONFIG}
-        ) AS headline,
-        ts_rank(clsd.tsv, ${tsQuery})::float8 AS score,
-        clsd.updated_at
+        ${searchHeadline(sql`coalesce(nullif(body_preview.text, ''), d.fulltext, clsd.searchable_text)`)},
+        ${searchScore({ tsv: sql`clsd.tsv`, updatedAt: sql`d.updated_at` })},
+        d.updated_at
       FROM case_law_search_documents clsd
       JOIN case_law_decisions d ON d.id = clsd.decision_id
+      ${redistributableSourceJoin}
       ${caseLawBodyPreviewJoin}
-      WHERE clsd.tsv @@ ${tsQuery}
+      WHERE TRUE
+        ${caseLawTextSearchFilter}
         ${caseLawUpdatedFilter}
-      ORDER BY score DESC, clsd.decision_id DESC
+        ${globalSearchCursorSql({
+          cursor: searchCursor,
+          score: searchScoreValue({
+            tsv: sql`clsd.tsv`,
+            updatedAt: sql`d.updated_at`,
+          }),
+          id: sql`'case-law:' || clsd.decision_id::text`,
+        })}
+      ORDER BY ${searchOrderBy({ id: sql`clsd.decision_id`, updatedAt: sql`d.updated_at` })}
       LIMIT ${fetchLimit}
     `),
   );
@@ -724,24 +829,46 @@ export const searchGlobal = async ({
         t.workspace_id,
         w.name AS workspace_name,
         cst.title,
-        ts_headline(
-          ${headlineRegconfig},
-          cst.title || ' ' || left(cst.searchable_text, 2000),
-          ${tsQuery},
-          ${TS_HEADLINE_CONFIG}
-        ) AS headline,
-        ts_rank(cst.tsv, ${tsQuery})::float8 AS score,
-        cst.updated_at
+        ${searchHeadline(sql`cst.title || ' ' || left(cst.searchable_text, 2000)`)},
+        ${searchScore({ tsv: sql`cst.tsv`, updatedAt: sql`t.updated_at` })},
+        t.updated_at
       FROM chat_thread_search_documents cst
       JOIN chat_threads t ON t.id = cst.thread_id
       LEFT JOIN workspaces w ON w.id = t.workspace_id
-      WHERE ${chatScope}
+      WHERE TRUE
+        AND ${chatScope}
+        AND cst.preview_generation =
+          ${CHAT_SEARCH_DISPLAY_METADATA_GENERATION}::uuid
         ${chatUpdatedFilter}
-        AND cst.tsv @@ ${tsQuery}
-      ORDER BY score DESC, cst.thread_id DESC
+        ${chatTextSearchFilter}
+        ${globalSearchCursorSql({
+          cursor: searchCursor,
+          score: searchScoreValue({
+            tsv: sql`cst.tsv`,
+            updatedAt: sql`t.updated_at`,
+          }),
+          id: sql`'chat:' || cst.thread_id::text`,
+        })}
+      ORDER BY ${searchOrderBy({ id: sql`t.id`, updatedAt: sql`t.updated_at` })}
       LIMIT ${fetchLimit}
     `),
   );
+
+  const hasAlternativeFacetPredicate =
+    hasSearchQuery || updatedFrom !== undefined;
+  const caseLawCountQuery = sql`
+    SELECT count(*)::int AS total
+    FROM (
+      SELECT 1
+      FROM case_law_search_documents clsd
+      JOIN case_law_decisions d ON d.id = clsd.decision_id
+      ${redistributableSourceJoin}
+      WHERE TRUE
+        ${caseLawTextSearchFilter}
+        ${caseLawUpdatedFilter}
+      LIMIT ${GLOBAL_SEARCH_RESULT_LIMIT}
+    ) bounded_case_law
+  `;
 
   const countPromises = [
     countWhen(isFirstPage && hasSelectedEntityType(selected), () =>
@@ -751,14 +878,14 @@ export const searchGlobal = async ({
         LEFT JOIN entities e
           ON e.id = sd.entity_id
           AND e.workspace_id = sd.workspace_id
-        ${fileFieldJoin}
+        ${selectedFileFieldJoin}
         WHERE sd.organization_id = ${organizationId}
-          ${entityWorkspaceFilter}
           ${entityTypeFilter}
           ${entityEditorFilter}
           ${entityMimeFilter}
           ${entityUpdatedFilter}
-          AND sd.tsv @@ ${tsQuery}
+          ${entityTextSearchFilter}
+          ${entityWorkspaceFilter}
       `),
     ),
     countWhen(
@@ -770,9 +897,9 @@ export const searchGlobal = async ({
         SELECT count(*)::int AS total
         FROM workspace_search_documents wsd
         WHERE wsd.organization_id = ${organizationId}
-          ${matterWorkspaceFilter}
           ${matterUpdatedFilter}
-          AND wsd.tsv @@ ${tsQuery}
+          ${matterTextSearchFilter}
+          ${matterWorkspaceFilter}
       `),
     ),
     countWhen(
@@ -785,22 +912,16 @@ export const searchGlobal = async ({
         SELECT count(*)::int AS total
         FROM contact_search_documents csd
         WHERE csd.organization_id = ${organizationId}
-          ${contactWorkspaceFilter}
           ${contactUpdatedFilter}
-          AND csd.tsv @@ ${tsQuery}
+          ${contactTextSearchFilter}
+          ${contactWorkspaceFilter}
       `),
     ),
     countWhen(
       isFirstPage &&
         !restrictToEntities &&
         shouldSearchType(selected, "case-law"),
-      () =>
-        rootDb.execute(sql`
-        SELECT count(*)::int AS total
-        FROM case_law_search_documents clsd
-        WHERE clsd.tsv @@ ${tsQuery}
-          ${caseLawUpdatedFilter}
-      `),
+      () => rootDb.execute(caseLawCountQuery),
     ),
     countWhen(
       isFirstPage && !restrictToEntities && shouldSearchType(selected, "chat"),
@@ -809,9 +930,12 @@ export const searchGlobal = async ({
         SELECT count(*)::int AS total
         FROM chat_thread_search_documents cst
         JOIN chat_threads t ON t.id = cst.thread_id
-        WHERE ${chatScope}
+        WHERE TRUE
+          AND ${chatScope}
+          AND cst.preview_generation =
+            ${CHAT_SEARCH_DISPLAY_METADATA_GENERATION}::uuid
           ${chatUpdatedFilter}
-          AND cst.tsv @@ ${tsQuery}
+          ${chatTextSearchFilter}
       `),
     ),
   ] as const;
@@ -825,66 +949,77 @@ export const searchGlobal = async ({
       LEFT JOIN entities e
         ON e.id = sd.entity_id
         AND e.workspace_id = sd.workspace_id
-      ${fileFieldJoin}
+      ${selectedFileFieldJoin}
       WHERE sd.organization_id = ${organizationId}
-        ${entityWorkspaceFilter}
+        ${entityTypeFacetFilter}
         ${entityEditorFilter}
         ${entityMimeFilter}
         ${entityUpdatedFilter}
-        AND sd.tsv @@ ${tsQuery}
+        ${entityTextSearchFilter}
+        ${entityWorkspaceFilter}
       GROUP BY sd.kind
       ORDER BY count DESC, sd.kind ASC
       LIMIT ${GLOBAL_SEARCH_FACET_LIMIT}
     `),
   );
 
+  // The primary count already covers a selected type (or every type when no
+  // type is selected). Only query alternative buckets for a text or lower-date
+  // search, not for blank type-only or upper-bound-only browsing. Public
+  // case-law counts are independently capped at the pagination horizon.
+  const shouldCountAlternativeTypeFacet = (
+    type: GlobalSearchResultType,
+  ): boolean =>
+    isFirstPage &&
+    !restrictToEntities &&
+    !shouldSearchType(selected, type) &&
+    hasAlternativeFacetPredicate;
+
   const matterTypeFacetCountPromise = countWhen(
-    isFirstPage && !restrictToEntities,
+    shouldCountAlternativeTypeFacet("matter"),
     () =>
       rootDb.execute(sql`
       SELECT count(*)::int AS total
       FROM workspace_search_documents wsd
       WHERE wsd.organization_id = ${organizationId}
-        ${matterWorkspaceFilter}
         ${matterUpdatedFilter}
-        AND wsd.tsv @@ ${tsQuery}
+        ${matterTextSearchFilter}
+        ${matterWorkspaceFilter}
     `),
   );
 
   const contactTypeFacetCountPromise = countWhen(
-    isFirstPage && !restrictToEntities && accessibleWorkspaceIds.length > 0,
+    shouldCountAlternativeTypeFacet("contact") &&
+      accessibleWorkspaceIds.length > 0,
     () =>
       rootDb.execute(sql`
         SELECT count(*)::int AS total
         FROM contact_search_documents csd
         WHERE csd.organization_id = ${organizationId}
-          ${contactWorkspaceFilter}
           ${contactUpdatedFilter}
-          AND csd.tsv @@ ${tsQuery}
+          ${contactTextSearchFilter}
+          ${contactWorkspaceFilter}
       `),
   );
 
   const caseLawTypeFacetCountPromise = countWhen(
-    isFirstPage && !restrictToEntities,
-    () =>
-      rootDb.execute(sql`
-      SELECT count(*)::int AS total
-      FROM case_law_search_documents clsd
-      WHERE clsd.tsv @@ ${tsQuery}
-        ${caseLawUpdatedFilter}
-    `),
+    shouldCountAlternativeTypeFacet("case-law"),
+    () => rootDb.execute(caseLawCountQuery),
   );
 
   const chatTypeFacetCountPromise = countWhen(
-    isFirstPage && !restrictToEntities,
+    shouldCountAlternativeTypeFacet("chat"),
     () =>
       rootDb.execute(sql`
       SELECT count(*)::int AS total
       FROM chat_thread_search_documents cst
       JOIN chat_threads t ON t.id = cst.thread_id
-      WHERE ${chatScope}
+      WHERE TRUE
+        AND ${chatScope}
+        AND cst.preview_generation =
+          ${CHAT_SEARCH_DISPLAY_METADATA_GENERATION}::uuid
         ${chatUpdatedFilter}
-        AND cst.tsv @@ ${tsQuery}
+        ${chatTextSearchFilter}
     `),
   );
 
@@ -896,14 +1031,14 @@ export const searchGlobal = async ({
       LEFT JOIN entities e
         ON e.id = sd.entity_id
         AND e.workspace_id = sd.workspace_id
-      ${fileFieldJoin}
+      ${selectedFileFieldJoin}
       WHERE sd.organization_id = ${organizationId}
-        ${entityWorkspaceFacetFilter}
         ${entityTypeFilter}
         ${entityEditorFilter}
         ${entityMimeFilter}
         ${entityUpdatedFilter}
-        AND sd.tsv @@ ${tsQuery}
+        ${entityTextSearchFilter}
+        ${entityWorkspaceFacetFilter}
     `
     : emptyWorkspaceFacetQuery;
 
@@ -913,9 +1048,9 @@ export const searchGlobal = async ({
       SELECT wsd.workspace_id AS value, wsd.title AS label
       FROM workspace_search_documents wsd
       WHERE wsd.organization_id = ${organizationId}
-        ${matterWorkspaceFacetFilter}
         ${matterUpdatedFilter}
-        AND wsd.tsv @@ ${tsQuery}
+        ${matterTextSearchFilter}
+        ${matterWorkspaceFacetFilter}
     `
       : emptyWorkspaceFacetQuery;
 
@@ -948,13 +1083,13 @@ export const searchGlobal = async ({
         ON e.id = sd.entity_id
         AND e.workspace_id = sd.workspace_id
       JOIN "user" editor ON editor.id = e.last_edited_by
-      ${fileFieldJoin}
+      ${selectedFileFieldJoin}
       WHERE sd.organization_id = ${organizationId}
-        ${entityWorkspaceFilter}
         ${entityTypeFilter}
         ${entityMimeFilter}
         ${entityUpdatedFilter}
-        AND sd.tsv @@ ${tsQuery}
+        ${entityTextSearchFilter}
+        ${entityWorkspaceFilter}
       GROUP BY editor.id, editor.name
       ORDER BY count DESC, editor.name ASC
       LIMIT ${GLOBAL_SEARCH_FACET_LIMIT}
@@ -971,16 +1106,16 @@ export const searchGlobal = async ({
       LEFT JOIN entities e
         ON e.id = sd.entity_id
         AND e.workspace_id = sd.workspace_id
-      ${fileFieldJoin}
+      ${allFileFieldJoin}
       CROSS JOIN LATERAL unnest(
         coalesce(file_field.mime_types, ARRAY[]::text[])
       ) AS mime_type(value)
       WHERE sd.organization_id = ${organizationId}
-        ${entityWorkspaceFilter}
         ${entityTypeFilter}
         ${entityEditorFilter}
         ${entityUpdatedFilter}
-        AND sd.tsv @@ ${tsQuery}
+        ${entityTextSearchFilter}
+        ${entityWorkspaceFilter}
       GROUP BY mime_type.value
       ORDER BY count DESC, mime_type.value ASC
       LIMIT ${GLOBAL_SEARCH_FACET_LIMIT}
@@ -1030,9 +1165,14 @@ export const searchGlobal = async ({
     ...caseLawRows.map(mapCaseLawHit),
     ...chatRows.map(mapChatHit),
     // hit.id tiebreak for deterministic ranking, not display text
-  ].sort((a, b) => b.score - a.score || compareCodepoint(b.hit.id, a.hit.id));
+  ].sort(compareScoredSearchHits);
 
-  const hits = scoredHits.slice(offset, offset + limit).map(({ hit }) => hit);
+  const page = paginateScoredSearchHits({
+    scoredHits:
+      legacyOffset === null ? scoredHits : scoredHits.slice(legacyOffset),
+    limit: pageLimit,
+    seen,
+  });
   const totalEntities = totalFrom(entityCount);
   const totalMatters = totalFrom(matterCount);
   const totalContacts = totalFrom(contactCount);
@@ -1045,10 +1185,18 @@ export const searchGlobal = async ({
   for (const row of entityTypeFacetRows) {
     typeFacetMap.set(String(row["value"]), { count: Number(row["count"]) });
   }
-  const matterFacetCount = totalFrom(matterTypeFacetCount);
-  const contactFacetCount = totalFrom(contactTypeFacetCount);
-  const caseLawFacetCount = totalFrom(caseLawTypeFacetCount);
-  const chatFacetCount = totalFrom(chatTypeFacetCount);
+  const matterFacetCount = shouldSearchType(selected, "matter")
+    ? totalMatters
+    : totalFrom(matterTypeFacetCount);
+  const contactFacetCount = shouldSearchType(selected, "contact")
+    ? totalContacts
+    : totalFrom(contactTypeFacetCount);
+  const caseLawFacetCount = shouldSearchType(selected, "case-law")
+    ? totalCaseLaw
+    : totalFrom(caseLawTypeFacetCount);
+  const chatFacetCount = shouldSearchType(selected, "chat")
+    ? totalChat
+    : totalFrom(chatTypeFacetCount);
   if (matterFacetCount > 0) {
     typeFacetMap.set("matter", { count: matterFacetCount });
   }
@@ -1067,7 +1215,7 @@ export const searchGlobal = async ({
   const mimeTypeFacetMap = toMimeTypeFacetMap(mimeTypeFacetRows);
 
   return {
-    hits,
+    hits: page.items,
     facets: {
       type: facetBuckets(typeFacetMap),
       workspace: facetBuckets(workspaceFacetMap),
@@ -1075,15 +1223,7 @@ export const searchGlobal = async ({
       mimeType: facetBuckets(mimeTypeFacetMap),
     },
     totalCount,
-    nextCursor: resolveGlobalSearchNextCursor({
-      limit,
-      offset,
-      // Counts are skipped on paginated requests; signal with `null`
-      // so the cursor decision falls back to the hit count instead of
-      // misreading a zeroed total as "no more results".
-      totalCount: isFirstPage ? totalCount : null,
-      hitsLength: hits.length,
-    }),
+    nextCursor: page.nextCursor,
   };
 };
 
@@ -1139,26 +1279,37 @@ export const searchGlobalFacet = async ({
   const {
     selected,
     restrictToEntities,
-    tsQuery,
-    entityWorkspaceFilter,
-    entityWorkspaceFacetFilter,
-    matterWorkspaceFacetFilter,
     entityEditorFilter,
     entityMimeFilter,
     entityUpdatedFilter,
     matterUpdatedFilter,
+    entityTextSearchFilter,
+    matterTextSearchFilter,
     entityTypeFilter,
   } = buildSearchFilterFragments({
     query,
-    organizationId,
-    accessibleWorkspaceIds,
-    selectedWorkspaceIds,
     types,
     editedByUserIds,
     mimeTypes,
     updatedFrom,
     updatedTo,
   });
+  const entityWorkspaceFilter = searchDocumentsAccessSql({
+    accessibleWorkspaceIds,
+    selectedWorkspaceIds,
+  });
+  // Workspace facets intentionally ignore the current workspace selection so
+  // every accessible sibling remains available as a bucket.
+  const entityWorkspaceFacetFilter = searchDocumentsAccessSql({
+    accessibleWorkspaceIds,
+    selectedWorkspaceIds: [],
+  });
+  const matterWorkspaceFacetFilter = workspaceSearchDocumentsAccessSql({
+    accessibleWorkspaceIds,
+    selectedWorkspaceIds: [],
+  });
+  const selectedFileFieldJoin = fileFieldJoin(mimeTypes);
+  const allFileFieldJoin = fileFieldJoin([]);
 
   if (facet === "editor") {
     if (!hasSelectedEntityType(selected)) {
@@ -1171,14 +1322,14 @@ export const searchGlobalFacet = async ({
         ON e.id = sd.entity_id
         AND e.workspace_id = sd.workspace_id
       JOIN "user" editor ON editor.id = e.last_edited_by
-      ${fileFieldJoin}
+      ${selectedFileFieldJoin}
       WHERE sd.organization_id = ${organizationId}
-        ${entityWorkspaceFilter}
         ${entityTypeFilter}
         ${entityMimeFilter}
         ${entityUpdatedFilter}
-        AND sd.tsv @@ ${tsQuery}
+        ${entityTextSearchFilter}
         ${labelLikeFilter(sql`editor.name`, search)}
+        ${entityWorkspaceFilter}
       GROUP BY editor.id, editor.name
       ORDER BY count DESC, editor.name ASC
       LIMIT ${limit}
@@ -1196,17 +1347,17 @@ export const searchGlobalFacet = async ({
       LEFT JOIN entities e
         ON e.id = sd.entity_id
         AND e.workspace_id = sd.workspace_id
-      ${fileFieldJoin}
+      ${allFileFieldJoin}
       CROSS JOIN LATERAL unnest(
         coalesce(file_field.mime_types, ARRAY[]::text[])
       ) AS mime_type(value)
       WHERE sd.organization_id = ${organizationId}
-        ${entityWorkspaceFilter}
         ${entityTypeFilter}
         ${entityEditorFilter}
         ${entityUpdatedFilter}
-        AND sd.tsv @@ ${tsQuery}
+        ${entityTextSearchFilter}
         ${labelLikeFilter(sql`mime_type.value`, search)}
+        ${entityWorkspaceFilter}
       GROUP BY mime_type.value
       ORDER BY count DESC, mime_type.value ASC
       LIMIT ${limit}
@@ -1230,14 +1381,14 @@ export const searchGlobalFacet = async ({
       LEFT JOIN entities e
         ON e.id = sd.entity_id
         AND e.workspace_id = sd.workspace_id
-      ${fileFieldJoin}
+      ${selectedFileFieldJoin}
       WHERE sd.organization_id = ${organizationId}
-        ${entityWorkspaceFacetFilter}
         ${entityTypeFilter}
         ${entityEditorFilter}
         ${entityMimeFilter}
         ${entityUpdatedFilter}
-        AND sd.tsv @@ ${tsQuery}
+        ${entityTextSearchFilter}
+        ${entityWorkspaceFacetFilter}
     `
     : emptyWorkspaceFacetQuery;
 
@@ -1246,9 +1397,9 @@ export const searchGlobalFacet = async ({
       SELECT wsd.workspace_id AS value, wsd.title AS label
       FROM workspace_search_documents wsd
       WHERE wsd.organization_id = ${organizationId}
-        ${matterWorkspaceFacetFilter}
         ${matterUpdatedFilter}
-        AND wsd.tsv @@ ${tsQuery}
+        ${matterTextSearchFilter}
+        ${matterWorkspaceFacetFilter}
     `
     : emptyWorkspaceFacetQuery;
 
@@ -1316,34 +1467,61 @@ export const upsertContactSearchDocument = async (
     contact.taxId,
     contact.currency,
   ]);
+  const previewGeneration = Bun.randomUUIDv7();
+  const previewPassages = buildSearchPreviewPassages(
+    contact.displayName,
+    searchableText,
+  );
 
-  await rootDb.execute(sql`
-    INSERT INTO contact_search_documents (
-      contact_id, organization_id, contact_type,
-      title, searchable_text, updated_at, tsv
-    ) VALUES (
-      ${contact.id},
-      ${contact.organizationId},
-      ${contact.type},
-      ${contact.displayName},
-      ${searchableText},
-      ${contact.updatedAt},
-      to_tsvector(
-        'simple',
-        unaccent(arabic_normalize(
-          coalesce(${contact.displayName}, '') || ' ' ||
-          coalesce(${searchableText}, '')
-        ))
+  await rootDb.transaction(async (tx) => {
+    await tx.execute(sql`
+      INSERT INTO contact_search_documents (
+        contact_id, organization_id, contact_type,
+        title, searchable_text, updated_at, tsv
+      ) VALUES (
+        ${contact.id},
+        ${contact.organizationId},
+        ${contact.type},
+        ${contact.displayName},
+        ${searchableText},
+        ${contact.updatedAt},
+        to_tsvector(
+          'simple',
+          unaccent(arabic_normalize(
+            coalesce(${contact.displayName}, '') || ' ' ||
+            coalesce(${searchableText}, '')
+          ))
+        )
       )
-    )
-    ON CONFLICT (contact_id) DO UPDATE SET
-      organization_id = EXCLUDED.organization_id,
-      contact_type = EXCLUDED.contact_type,
-      title = EXCLUDED.title,
-      searchable_text = EXCLUDED.searchable_text,
-      updated_at = EXCLUDED.updated_at,
-      tsv = EXCLUDED.tsv
-  `);
+      ON CONFLICT (contact_id) DO UPDATE SET
+        organization_id = EXCLUDED.organization_id,
+        contact_type = EXCLUDED.contact_type,
+        title = EXCLUDED.title,
+        searchable_text = EXCLUDED.searchable_text,
+        updated_at = EXCLUDED.updated_at,
+        tsv = EXCLUDED.tsv
+    `);
+    await tx.execute(sql`
+      DELETE FROM contact_search_document_preview_passages
+      WHERE contact_id = ${contact.id}
+    `);
+    await tx.execute(sql`
+      INSERT INTO contact_search_document_preview_passages (
+        contact_id, organization_id, generation, ordinal, content, tsv
+      ) VALUES ${buildSearchPreviewPassageValueRows({
+        generation: previewGeneration,
+        leadingValues: [sql`${contact.id}`, sql`${contact.organizationId}`],
+        passages: previewPassages,
+        regconfig: sql`'simple'`,
+        useUnaccent: true,
+      })}
+    `);
+    await tx.execute(sql`
+      UPDATE contact_search_documents
+      SET preview_generation = ${previewGeneration}::uuid
+      WHERE contact_id = ${contact.id}
+    `);
+  });
 };
 
 export const upsertWorkspaceSearchDocument = async (
@@ -1435,38 +1613,70 @@ export const upsertWorkspaceSearchDocument = async (
       client?.updatedAt,
       ...workspace.workspaceContacts.map(({ contact }) => contact?.updatedAt),
     ]) ?? workspace.lastActivityAt;
+  const previewGeneration = Bun.randomUUIDv7();
+  const previewPassages = buildSearchPreviewPassages(
+    workspace.name,
+    searchableText,
+  );
 
-  await rootDb.execute(sql`
-    INSERT INTO workspace_search_documents (
-      workspace_id, organization_id,
-      title, searchable_text, updated_at, tsv
-    ) VALUES (
-      ${workspace.id},
-      ${workspace.organizationId},
-      ${workspace.name},
-      ${searchableText},
-      ${updatedAt},
-      to_tsvector(
-        'simple',
-        unaccent(arabic_normalize(
-          coalesce(${workspace.name}, '') || ' ' ||
-          coalesce(${searchableText}, '')
-        ))
+  await rootDb.transaction(async (tx) => {
+    await tx.execute(sql`
+      INSERT INTO workspace_search_documents (
+        workspace_id, organization_id,
+        title, searchable_text, updated_at, tsv
+      ) VALUES (
+        ${workspace.id},
+        ${workspace.organizationId},
+        ${workspace.name},
+        ${searchableText},
+        ${updatedAt},
+        to_tsvector(
+          'simple',
+          unaccent(arabic_normalize(
+            coalesce(${workspace.name}, '') || ' ' ||
+            coalesce(${searchableText}, '')
+          ))
+        )
       )
-    )
-    ON CONFLICT (workspace_id) DO UPDATE SET
-      organization_id = EXCLUDED.organization_id,
-      title = EXCLUDED.title,
-      searchable_text = EXCLUDED.searchable_text,
-      updated_at = EXCLUDED.updated_at,
-      tsv = EXCLUDED.tsv
-  `);
+      ON CONFLICT (workspace_id) DO UPDATE SET
+        organization_id = EXCLUDED.organization_id,
+        title = EXCLUDED.title,
+        searchable_text = EXCLUDED.searchable_text,
+        updated_at = EXCLUDED.updated_at,
+        tsv = EXCLUDED.tsv
+    `);
+    await tx.execute(sql`
+      DELETE FROM workspace_search_document_preview_passages
+      WHERE workspace_id = ${workspace.id}
+    `);
+    await tx.execute(sql`
+      INSERT INTO workspace_search_document_preview_passages (
+        workspace_id, organization_id, generation, ordinal, content, tsv
+      ) VALUES ${buildSearchPreviewPassageValueRows({
+        generation: previewGeneration,
+        leadingValues: [sql`${workspace.id}`, sql`${workspace.organizationId}`],
+        passages: previewPassages,
+        regconfig: sql`'simple'`,
+        useUnaccent: true,
+      })}
+    `);
+    await tx.execute(sql`
+      UPDATE workspace_search_documents
+      SET preview_generation = ${previewGeneration}::uuid
+      WHERE workspace_id = ${workspace.id}
+    `);
+  });
+};
+
+type SearchActivityDatabase = {
+  execute: (query: SQL) => Promise<unknown>;
 };
 
 export const syncWorkspaceSearchActivity = async (
   workspaceId: SafeId<"workspace">,
+  db: SearchActivityDatabase = rootDb,
 ): Promise<void> => {
-  await rootDb.execute(sql`
+  await db.execute(sql`
     UPDATE workspace_search_documents wsd
     SET updated_at = w.last_activity_at
     FROM workspaces w

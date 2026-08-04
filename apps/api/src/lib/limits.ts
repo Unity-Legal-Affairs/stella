@@ -1,3 +1,4 @@
+import { CHAT_RICH_PART_LIMITS } from "@stll/api-contract";
 import {
   CHAT_CONTEXT_FILE_MAX_BYTES,
   CHAT_CONTEXT_FILE_MAX_MEGABYTES,
@@ -186,6 +187,8 @@ export const LIMITS = {
   reportExportsPageSizeMax: 100,
   auditLogPageSizeDefault: 50,
   auditLogPageSizeMax: 200,
+  matterActivityPageSizeDefault: 15,
+  matterActivityPageSizeMax: 50,
   /** Page sizes for the operator recent-registrations listing. */
   operatorRegistrationsPageSizeDefault: 50,
   operatorRegistrationsPageSizeMax: 200,
@@ -203,6 +206,13 @@ export const LIMITS = {
   searchQueryMaxLength: 500,
   searchPageSizeDefault: 20,
   searchPageSizeMax: 100,
+  /** Maximum visible text returned by any global-search preview response. */
+  searchPreviewResponseCharacterLimit: 16_000,
+  /** Messages surrounding the best match in a global-search chat preview. */
+  searchChatPreviewMessageLimit: 6,
+  savedSearchesPerUser: 100,
+  savedSearchesPageSizeDefault: 50,
+  savedSearchesPageSizeMax: 100,
   /** Cap on the rolled-up message text indexed per chat thread for
    *  global search. Bounds the stored tsv so a long conversation
    *  cannot blow up the index; the headline only reads the first
@@ -217,6 +227,13 @@ export const LIMITS = {
   /** Max messages returned before or after a history expansion target. */
   chatHistoryExpansionSideMax: 5,
   extractedContentMaxChars: 500_000,
+  /** Maximum encrypted OCR page-geometry payload before AES-GCM overhead. */
+  documentOcrPayloadMaxBytes: 16 * 1024 * 1024,
+  /** Cursor page size for document- and matter-deletion OCR derivative
+   *  cleanup. Also caps the storage keys recorded per cleanup request. */
+  ocrDerivativeCleanupBatchSize: 1000,
+  /** Hard timeout for adding a searchable text layer to one PDF. */
+  ocrPdfGenerationTimeoutMs: 2 * 60_000,
   /** Hard timeout (ms) for the sandboxed extraction subprocess. */
   extractionTimeoutMs: 30_000,
   /** Wall-clock ceiling (ms) for the live DOCX-to-Markdown read path in
@@ -224,13 +241,14 @@ export const LIMITS = {
    *  folio conversion of a single document. Mirrors `extractionTimeoutMs`'s
    *  budget for the same class of work (one document-sized file). */
   docxMarkdownConversionTimeoutMs: 30_000,
+  /** Wall-clock ceiling for writing one generated chat export to object storage. */
+  chatExportObjectIoTimeoutMs: 30_000,
   clauseExportLimit: 500,
   clauseImportBatchLimit: 200,
   templateFillsRetentionDays: 365,
   caseLawMatterLinksPerWorkspace: 1000,
   caseLawSearchPageSizeDefault: 20,
   caseLawSearchPageSizeMax: 100,
-  caseLawSlugCollisionScanLimit: 1000,
   /** Max language variants for one decision's languageGroupKey. Bounds the
    *  alternate-language reads (decision detail + sitemap hreflang) so a
    *  malformed/over-merged group key cannot load an unbounded set. */
@@ -264,6 +282,11 @@ export const LIMITS = {
    *  a slow-but-live transfer. Bounds every corpus S3 call so a wedged
    *  transfer can never freeze a daemon loop. */
   corpusObjectIoTimeoutMs: 60_000,
+  /** Max decompressed bytes for one corpus object. Real payloads are a few
+   *  MB; anything past this ceiling is a corrupt or hostile object, and
+   *  rejecting it here keeps a giant string away from JSON.parse and the
+   *  chunker, whose cost scales with input size on the daemon's thread. */
+  corpusPayloadMaxDecompressedBytes: 128 * 1024 * 1024,
   infoSoudEventsMax: 200,
   infoSoudHearingsMax: 50,
   infoSoudRelatedCasesMax: 50,
@@ -276,6 +299,23 @@ export const LIMITS = {
   chatContextTextMaxChars: 32_000,
   /** Max number of file attachments per chat message. */
   chatContextFilesPerMessage: 5,
+  /** Max encoded inline audio/video payload stored in one chat part. Large
+   * generated media should use a URL instead of inflating every history read. */
+  chatRichMediaInlineMaxChars: CHAT_RICH_PART_LIMITS.inlineMediaMaxChars,
+  chatRichMediaMimeTypeMaxChars: CHAT_RICH_PART_LIMITS.mediaMimeTypeMaxChars,
+  chatRichMediaUrlMaxChars: CHAT_RICH_PART_LIMITS.mediaUrlMaxChars,
+  chatRichPartIdentifierMaxChars: CHAT_RICH_PART_LIMITS.identifierMaxChars,
+  /** Max number of rich presentation parts stored in one message. */
+  chatRichPartsPerMessageMax: 16,
+  /** Max serialized UTF-8 bytes across rich presentation parts in one
+   * message. Keeps one generated media payload valid while bounding JSONB
+   * row size and repeated history transfer cost. */
+  chatRichPartsTotalMaxBytes: 5 * 1024 * 1024,
+  /** Max text or base64 payload stored for one sandboxed MCP App resource. */
+  chatUiResourceContentMaxChars:
+    CHAT_RICH_PART_LIMITS.uiResourceContentMaxChars,
+  /** Max length of the routing URI on one persisted MCP App resource. */
+  chatUiResourceUriMaxChars: CHAT_RICH_PART_LIMITS.uiResourceUriMaxChars,
   /** Default page size for the user's chat thread history. */
   chatThreadListPageSizeDefault: 50,
   /** Max page size for the user's chat thread history. */
@@ -348,6 +388,23 @@ export const AUTH_RATE_LIMITS = {
 } as const;
 
 /**
+ * Longer-lived limits for new-account OTP requests. Rate-limited requests are
+ * acknowledged without sending an OTP, keeping account state out of the HTTP
+ * response while preserving existing users' login capacity.
+ */
+export const NEW_ACCOUNT_OTP_RATE_LIMITS = {
+  email: { duration: 60 * 60 * 1000, max: 3 },
+  ip: { duration: 3 * 60 * 60 * 1000, max: 25 },
+} as const;
+
+/**
+ * Fixed production response delay for sign-in email-OTP requests. Delivery and
+ * suppression continue independently so provider latency cannot reveal account
+ * state through the HTTP response.
+ */
+export const EMAIL_OTP_MIN_RESPONSE_DURATION_MS = 1000;
+
+/**
  * Max window (seconds) across all auth rate-limit rules.
  * Used as the Redis TTL for better-auth's customStorage,
  * which does not pass per-endpoint window to `set`.
@@ -368,6 +425,10 @@ export const API_RATE_LIMITS = {
   /** REST API: 1000 req/min per IP. Covers normal navigation
    *  (5-10 requests per page load × frequent workspace switching). */
   api: { duration: 60_000, max: 1000 },
+  /** Skill URL discovery/import: 10 req/min per IP. Each request performs
+   *  bounded outbound source fetches, so this separate cap prevents the
+   *  general API budget from amplifying third-party traffic. */
+  skillSource: { duration: 60_000, max: 10 },
   /** File uploads: 500 req/min (separate budget). */
   upload: { duration: 60_000, max: 500 },
   /** Folio collaborative-edit token endpoints: 30 req/min per IP.

@@ -34,10 +34,12 @@ import { ChatInputSurface } from "@/components/chat-input-surface";
 import { ChatComposerDock } from "@/components/chat/chat-composer-dock";
 import { ChatMatterPicker } from "@/components/chat/chat-matter-picker";
 import { useChatModelSelection } from "@/components/chat/use-chat-model-selection";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import { MatterIcon } from "@/components/matter-icon";
 import { useAIKeyGate } from "@/components/require-ai-key";
 import { StellaMark } from "@/components/stella-mark";
 import Tooltip from "@/components/tooltip";
+import { MatterContextMenu } from "@/components/workspaces/matter-context-menu";
 import { useChatUserContext } from "@/features/chat/hooks/use-chat-user-context";
 import { buildChatRequestMessage } from "@/features/chat/lib/build-chat-request-message";
 import {
@@ -59,7 +61,7 @@ import {
   useChatAnonymized,
 } from "@/lib/chat-anonymized-store";
 import type { ChatThreadRef } from "@/lib/chat-thread-ref";
-import { createChatThreadId } from "@/lib/chat-thread-ref";
+import { createChatThreadId, getChatThreadKey } from "@/lib/chat-thread-ref";
 import { isPlaceholderThreadTitle } from "@/lib/chat-thread-title";
 import { useChatWebSearchPreferenceStore } from "@/lib/chat-web-search-store";
 import { ChromeHeaderActions } from "@/lib/chrome-header-actions";
@@ -72,11 +74,9 @@ import { useSavedPrompts } from "@/lib/prompts/use-saved-prompts";
 import { formatRelativeTime } from "@/lib/relative-time";
 import { matchReservedChatCommand } from "@/lib/reserved-chat-commands";
 import { toSafeId } from "@/lib/safe-id";
+import { useCreateMatterStore } from "@/lib/workspaces/create-matter-store";
+import { workspacesNavigationOptions } from "@/lib/workspaces/queries";
 import { ThreadsSheet } from "@/routes/_protected.chat/-components/threads-sheet";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
-import { MatterContextMenu } from "@/routes/_protected.workspaces/-components/matter-context-menu";
-import { workspacesNavigationOptions } from "@/routes/_protected.workspaces/-queries";
-import { useCreateMatterStore } from "@/routes/_protected.workspaces/-store/create-matter-store";
 
 export const Route = createFileRoute("/_protected/chat/")({
   component: ChatIndex,
@@ -127,8 +127,9 @@ function ChatIndex() {
     [groupedThreadPages?.pages],
   );
   const anonymized = useChatAnonymized(threadRef);
+  const [composerFocused, setComposerFocused] = useState(false);
   const getSendMode = useLatestCallback(() => getChatSendMode(threadRef));
-  const openInspectorChat = useInspectorStore((s) => s.openChat);
+  const openInspectorChat = useInspectorTabsStore((s) => s.openChat);
   const [contextMatterIds, setContextMatterIds] = useState<string[]>([]);
   const getContextMatterIds = useLatestCallback(() => contextMatterIds);
   // Standalone, non-suspense fetch of the draft thread metadata.
@@ -470,6 +471,8 @@ function ChatIndex() {
             <ChatAnonymizationLayer
               editor={controller.editor}
               enabled={anonymized}
+              focused={composerFocused}
+              ownerKey={getChatThreadKey(threadRef)}
               workspaceId={draftThreadId}
             />
             <ChatInputSurface
@@ -497,6 +500,12 @@ function ChatIndex() {
                     // (~system prompt + tools) rather than 0% until send.
                     context: chatDraftMeta?.context ?? null,
                   }}
+                  models={{
+                    activeOrganizationId,
+                    threadRef,
+                    selectedModel: chatDraftMeta?.model ?? null,
+                    selectModel: modelSelection.selectModel,
+                  }}
                   leadingContext={
                     <ChatMatterPicker
                       matterIds={contextMatterIds}
@@ -510,6 +519,7 @@ function ChatIndex() {
                 />
               }
               onSubmit={handleSubmit}
+              onFocusChange={setComposerFocused}
             />
           </div>
         </div>

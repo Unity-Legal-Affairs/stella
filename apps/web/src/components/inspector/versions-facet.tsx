@@ -8,25 +8,27 @@
  * the selection). Compare is owned by the document route.
  */
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, useSyncExternalStore } from "react";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Result } from "better-result";
 import { useTranslations } from "use-intl";
 
 import { stellaToast } from "@stll/ui/components/toast";
 
-import { useInspectorStore } from "@/components/inspector/inspector-store";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
+import { VersionsSidebar } from "@/components/pdf/versions-sidebar";
+import type { Version } from "@/components/pdf/versions-sidebar";
 import { useMountEffect } from "@/hooks/use-effect";
 import { getAnalytics } from "@/lib/analytics/provider";
 import { detached } from "@/lib/detached";
-import { VersionsSidebar } from "@/routes/_protected.workspaces/$workspaceId/-components/pdf/versions-sidebar";
-import type { Version } from "@/routes/_protected.workspaces/$workspaceId/-components/pdf/versions-sidebar";
+import { APIError } from "@/lib/errors/api";
+import { fileContentQueryKey } from "@/lib/files/file-metadata-query.logic";
 import {
   entityVersionsOptions,
   fetchOlderVersions,
-} from "@/routes/_protected.workspaces/$workspaceId/-queries/entity-versions";
+} from "@/lib/workspaces/queries/entity-versions";
 
 type VersionsFacetProps = {
   workspaceId: string;
@@ -44,7 +46,7 @@ export const VersionsFacet = ({
   const pathname = useRouterState({
     select: (state) => state.location.pathname,
   });
-  const openFileForEntity = useInspectorStore((s) => s.openFileForEntity);
+  const openFileForEntity = useInspectorTabsStore((s) => s.openFileForEntity);
   const { data } = useQuery(entityVersionsOptions({ workspaceId, entityId }));
 
   // Accumulated list seeded from the query's newest page and extended
@@ -244,6 +246,36 @@ export const VersionsFacet = ({
       />
     </div>
   );
+};
+
+export const useSelectedFileVersionMissing = ({
+  enabled,
+  fieldId,
+  workspaceId,
+}: {
+  enabled: boolean;
+  fieldId: string;
+  workspaceId: string;
+}): boolean => {
+  const queryClient = useQueryClient();
+  const subscribe = useCallback(
+    (onStoreChange: () => void) =>
+      queryClient.getQueryCache().subscribe(() => onStoreChange()),
+    [queryClient],
+  );
+  const getSnapshot = useCallback(() => {
+    if (!enabled) {
+      return false;
+    }
+
+    const error = queryClient.getQueryState(
+      fileContentQueryKey({ workspaceId, fieldId }),
+    )?.error;
+    return APIError.is(error) && error.status === 404;
+  }, [enabled, fieldId, queryClient, workspaceId]);
+  const isMissing = useSyncExternalStore(subscribe, getSnapshot, () => false);
+
+  return isMissing;
 };
 
 const LoadOlderVersionLifecycle = ({

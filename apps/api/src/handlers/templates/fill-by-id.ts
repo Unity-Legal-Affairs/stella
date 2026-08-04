@@ -3,9 +3,6 @@ import { t } from "elysia";
 
 import type { SafeDb, ScopedDb } from "@/api/db/safe-db";
 import { templateFills } from "@/api/db/schema";
-import { clauseBodySchema } from "@/api/handlers/clauses/shared-schemas";
-import { convertToPdf } from "@/api/handlers/files/gotenberg";
-import { recordTemplateUse } from "@/api/handlers/templates/record-use";
 import { isTemplateOutputValid } from "@/api/handlers/templates/validate-template-output";
 import { loadOrgAIConfig } from "@/api/lib/ai-config-loader";
 import { createTanStackAIAnalyticsCallbacks } from "@/api/lib/analytics/tanstack-ai";
@@ -14,6 +11,7 @@ import type { HandlerConfig } from "@/api/lib/api-handlers";
 import type { AuditRecorder } from "@/api/lib/audit-log";
 import { AUDIT_ACTION, AUDIT_RESOURCE_TYPE } from "@/api/lib/audit-log";
 import type { SafeId } from "@/api/lib/branded-types";
+import { clauseBodySchema } from "@/api/lib/clauses/body-schema";
 import { clauseBodyToRichPatch } from "@/api/lib/clauses/clause-to-patch";
 import type { ClauseBody } from "@/api/lib/clauses/types";
 import { contentDisposition } from "@/api/lib/content-disposition";
@@ -37,12 +35,15 @@ import { readManifest } from "@/api/lib/docx/template-manifest";
 import { isTemplateData } from "@/api/lib/docx/types";
 import type { RichPatchValue } from "@/api/lib/docx/types";
 import { HandlerError } from "@/api/lib/errors/tagged-errors";
+import { convertToPdf } from "@/api/lib/files/gotenberg";
 import { getS3 } from "@/api/lib/s3";
 import { DOCX_EXT_RE } from "@/api/lib/sanitize-filename";
+import { recordTemplateUse } from "@/api/lib/templates/record-use";
+import { containsNull } from "@/api/lib/templates/template-data";
 import { isRecord } from "@/api/lib/type-guards";
 import { DOCX_MIME_TYPE, OCTET_STREAM_MIME_TYPE } from "@/api/mime-types";
 
-import { assertTemplateFillUsage, containsNull } from "./fill";
+import { assertTemplateFillUsage } from "./fill";
 
 const fillByIdBodySchema = t.Object({
   values: t.String(),

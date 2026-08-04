@@ -1,0 +1,189 @@
+/**
+ * The model half of AI template preparation: given a (typically filled)
+ * document's plain text, ask the model which values should become fillable
+ * fields. Pairs with `applyFieldSuggestions`, which deterministically rewrites
+ * the document from the returned suggestions.
+ *
+ * Uses the same structured-output pattern as workflow generation
+ * (`generateTanStackObjectForRole`). An empty list means the model looked and
+ * found nothing to suggest; a call failure (BYOK misconfiguration, provider
+ * outage, timeout) instead rejects. `suggestTemplateFields` is the throwing
+ * primitive for a caller that wants the failure surfaced
+ * (`suggest-fields.ts`); `suggestTemplateFieldsOrEmpty` wraps it for the one
+ * caller that wants the documented degrade-to-empty-and-fall-back-to-plain-
+ * `{{marker}}`-discovery behaviour (`prepare.ts`), capturing the failure
+ * first so it is not silent.
+ */
+
+import * as v from "valibot";
+
+import { isFieldPath } from "@stll/template-conditions";
+
+import { resolveCaching, type OrgAIConfig } from "@/api/lib/ai-config";
+import type { createTanStackAIAnalyticsCallbacks } from "@/api/lib/analytics/tanstack-ai";
+import type { SafeId } from "@/api/lib/branded-types";
+import type { FieldSuggestion } from "@/api/lib/docx/apply-field-suggestions";
+import { HandlerError } from "@/api/lib/errors/tagged-errors";
+import { generateTanStackObjectForRole } from "@/api/lib/tanstack-ai-generate";
+
+const SUGGEST_TIMEOUT_MS = 45_000;
+
+// strictObject + nullable (not object/optional): OpenAI's strict structured
+// output rejects schema objects without `additionalProperties: false` and any
+// property missing from `required` — so optionals must be required-but-nullable
+// ("Invalid schema for response_format" — fails on gpt-* fast models otherwise).
+export const fieldSuggestionsSchema = v.strictObject({
+  suggestions: v.array(
+    v.strictObject({
+      literalText: v.string(),
+      fieldPath: v.string(),
+      inputType: v.nullable(
+        v.picklist(["text", "number", "boolean", "date", "select"]),
+      ),
+      label: v.nullable(v.string()),
+      hint: v.nullable(v.string()),
+      exampleValue: v.nullable(v.string()),
+      aiPrompt: v.nullable(v.string()),
+    }),
+  ),
+});
+
+const SYSTEM_PROMPT =
+  "You convert a filled legal document into a reusable template. You identify " +
+  "the values that should become fillable fields and copy their exact text. " +
+  "You never invent values or map text that does not appear verbatim.";
+
+const FIELD_SUGGESTION_SPEC = `Identify the values in this document that should become fillable fields — party names, addresses, registration numbers (KRS / NIP / REGON), monetary amounts, dates, the signatory's name and role, and free-text sections such as the scope of a power of attorney.
+
+For each, return:
+- literalText: the EXACT text in the document to replace, copied verbatim
+- fieldPath: a dot-separated name, e.g. company.name, company.krs, signatory.name, signatory.role, signing_date, scope. Only letters, digits, underscores, dashes and dots — for list positions use dots (attorneys.0.name), NEVER brackets
+- inputType: one of text, number, boolean, date, select
+- label: a short user-facing question or name for the fill form, in the document's language (e.g. "Company name")
+- hint: a short hint for the person filling the field — the expected format or where to find the value (e.g. "10-digit KRS number from the company register"), in the document's language, under 200 characters. Use null when the label is self-explanatory
+- exampleValue: a realistic example of the value, copied or derived from the document
+- aiPrompt: ONLY for free-text sections that should be drafted by AI at fill time (e.g. the scope of the power of attorney) — an instruction describing what to draft. Use null for ordinary fields.
+
+If the document is bilingual or multi-column (e.g. a two-column table with parallel language versions side by side), the SAME value appears once per language. Return a SEPARATE entry for EACH occurrence, all sharing the SAME fieldPath, each with its own literalText copied verbatim from that language/column — so every column becomes fillable, not just the first. Never leave one language hardcoded while the other is a field.`;
+
+// The model occasionally invents bracket-indexed paths (attorneys[0].name)
+// despite the prompt; the marker grammar only knows dotted segments, and
+// resolvePath walks numeric segments into arrays, so rewrite [N] -> .N and
+// drop any suggestion whose path still falls outside the grammar — an invalid
+// path would insert a {{marker}} nothing can highlight, discover, or fill.
+const sanitizeFieldPath = (raw: string): string | null => {
+  const dotted = raw
+    .replaceAll(/\[(?<index>\d+)\]/gu, ".$1")
+    .replaceAll(/\.{2,}/gu, ".")
+    .replace(/^\./u, "")
+    .replace(/\.$/u, "");
+  return dotted.length > 0 && isFieldPath(dotted) ? dotted : null;
+};
+
+const buildPrompt = (documentText: string, instructions?: string): string => {
+  const extra = instructions
+    ? `Additional instructions from the user, follow them:\n${instructions}\n\n`
+    : "";
+  return `${FIELD_SUGGESTION_SPEC}\n\n${extra}Document:\n${documentText}`;
+};
+
+/** A model field suggestion plus the proposed fill hint (FieldMeta.hint).
+ *  Structurally a FieldSuggestion, so existing consumers keep working;
+ *  hint-aware callers persist it into the manifest. */
+export type SuggestedTemplateField = FieldSuggestion & {
+  hint?: string | undefined;
+};
+
+export const suggestTemplateFields = async ({
+  documentText,
+  instructions,
+  orgAIConfig,
+  organizationId,
+  aiAnalytics,
+}: {
+  documentText: string;
+  instructions?: string | undefined;
+  orgAIConfig: OrgAIConfig | null;
+  organizationId: SafeId<"organization">;
+  aiAnalytics: ReturnType<typeof createTanStackAIAnalyticsCallbacks>;
+}): Promise<SuggestedTemplateField[]> => {
+  // No try/catch here: a call failure (BYOK misconfiguration, provider
+  // outage, timeout) propagates to the caller, which decides whether to
+  // surface it (suggest-fields.ts) or degrade to [] after capturing it
+  // (prepare.ts) — see the module doc comment.
+  const { suggestions } = await generateTanStackObjectForRole({
+    role: "fast",
+    orgAIConfig,
+    organizationId,
+    analytics: aiAnalytics,
+    caching: resolveCaching({
+      promptCachingEnabled: false,
+      role: "fast",
+      scopeKey: organizationId,
+    }),
+    system: SYSTEM_PROMPT,
+    prompt: buildPrompt(documentText, instructions),
+    outputSchema: fieldSuggestionsSchema,
+    abortSignal: AbortSignal.timeout(SUGGEST_TIMEOUT_MS),
+    serviceTier: "standard",
+  });
+  // The schema models "absent" as null (OpenAI strict mode); FieldSuggestion
+  // uses optional members.
+  return suggestions.flatMap((s) => {
+    const fieldPath = sanitizeFieldPath(s.fieldPath);
+    if (fieldPath === null) {
+      return [];
+    }
+    return [
+      {
+        literalText: s.literalText,
+        fieldPath,
+        inputType: s.inputType ?? undefined,
+        label: s.label ?? undefined,
+        hint: s.hint ?? undefined,
+        exampleValue: s.exampleValue ?? undefined,
+        aiPrompt: s.aiPrompt ?? undefined,
+      },
+    ];
+  });
+};
+
+/**
+ * Degrade-to-empty wrapper around `suggestTemplateFields` for the one caller
+ * that wants that documented fallback (see the module doc comment): a call
+ * failure is captured via `aiAnalytics.captureError` and swallowed into an
+ * empty list instead of rejecting. A genuine "found nothing" response from
+ * the model is already an empty array, so it passes through unchanged.
+ */
+export const suggestTemplateFieldsOrEmpty = async (
+  args: Parameters<typeof suggestTemplateFields>[0],
+): Promise<SuggestedTemplateField[]> => {
+  try {
+    return await suggestTemplateFields(args);
+  } catch (error) {
+    args.aiAnalytics.captureError(error);
+    return [];
+  }
+};
+
+// `instanceof` on the generic class narrows to `HandlerError<any>`; the
+// predicate restores the default parameter.
+const isHandlerError = (error: unknown): error is HandlerError =>
+  error instanceof HandlerError;
+
+/**
+ * A typed 4xx keeps its status and message (curated client conditions such
+ * as the BYOK 403). Anything else — including provider-run 502s, whose
+ * message is provider-controlled and can echo request content — becomes the
+ * generic 500.
+ */
+export const toSuggestFieldsError = (cause: unknown): HandlerError => {
+  if (isHandlerError(cause) && cause.status < 500) {
+    return cause;
+  }
+  return new HandlerError({
+    status: 500,
+    message: "Failed to suggest template fields",
+    cause,
+  });
+};

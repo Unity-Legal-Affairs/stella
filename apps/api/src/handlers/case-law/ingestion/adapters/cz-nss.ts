@@ -10,6 +10,7 @@ import { EMPTY_AST } from "@/api/handlers/case-law/ingestion/adapter";
 import type {
   EmptyAst,
   IngestionResult,
+  SliceCoverage,
   SourceAdapter,
 } from "@/api/handlers/case-law/ingestion/adapter";
 import {
@@ -45,6 +46,42 @@ import { logger } from "@/api/lib/observability/logger";
 
 const BASE_URL = "https://vyhledavac.nssoud.cz";
 const RESULTS_PER_PAGE = 20;
+
+/**
+ * How many records the court says its own search matched.
+ *
+ * The count is grouped ("1 234"), so digit runs may be separated by
+ * spaces. `(?:\s\d+)*` keeps the separator and the digits disjoint; a
+ * `[\d\s]*` class would overlap the `\s+` that follows, letting the
+ * engine re-split every trailing space and costing time quadratic in the
+ * length of the page.
+ *
+ * Read from a date-filtered search this is the day's expected total, which
+ * is what makes a partial crawl detectable rather than silent.
+ */
+const RESULT_COUNT_PATTERNS = [
+  /Nalezeno\s+(?<count>\d+(?:\s\d+)*)\s+záznam/iu,
+  /Celkem\s+(?<count>\d+(?:\s\d+)*)\s+záznam/iu,
+  /(?<!\d)(?<count>\d+(?:\s\d+)*)\s+výsledk/iu,
+  /resCount[^>]*>(?<count>\d[\d\s]*)</iu,
+  /myResCount[^>]*>(?<count>\d[\d\s]*)</iu,
+  /pocetZaznamu[^>]*>(?<count>\d[\d\s]*)</iu,
+];
+
+const reportedResultCount = (html: string): number | null => {
+  for (const pattern of RESULT_COUNT_PATTERNS) {
+    const match = pattern.exec(html);
+    const raw = match?.groups?.["count"];
+    if (raw === undefined) {
+      continue;
+    }
+    const parsed = Number.parseInt(raw.replace(/\s/gu, ""), 10);
+    if (!Number.isNaN(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return null;
+};
 
 /** Default lookback when no cursor is provided. */
 const DEFAULT_LOOKBACK_DAYS = 30;
@@ -787,16 +824,33 @@ export const czNssAdapter: SourceAdapter = {
   pageTimeoutMs: 120_000,
   maxSyncPages: 20,
 
+  /**
+   * The portal aggregates several courts, and its search filters cannot be
+   * scoped to one of them without executing the site's own scripts — so the
+   * count, like the crawl, covers the portal's whole collection rather than
+   * this court alone. The benchmark still matches what the crawl sees.
+   */
   async getTotalCount(signal) {
     try {
       const session = await getSession(signal);
 
-      // Submit empty search (no date filters = all results)
+      // A search with no criterion silently no-ops (the page re-renders
+      // unsubmitted), so an all-inclusive decision-date range supplies the
+      // one criterion without excluding anything. Counting the full range
+      // is slow on the source's side; the longer timeout is deliberate.
       const formData = new URLSearchParams();
       for (const [name, value] of session.formFields) {
         formData.set(name, value);
       }
       formData.set("__RequestVerificationToken", session.token);
+      formData.set(
+        "vyhledavaciSekce[1].vyhledavaciPodminka[0].vyhledavaciPodminkaHodnota[0].HodnotaDatumACasOd",
+        "01.01.1990",
+      );
+      formData.set(
+        "vyhledavaciSekce[1].vyhledavaciPodminka[0].vyhledavaciPodminkaHodnota[0].HodnotaDatumACasDo",
+        `31.12.${new Date().getFullYear() + 1}`,
+      );
 
       const response = await fetchWithTimeout(`${BASE_URL}/Home/Index`, {
         method: "POST",
@@ -809,7 +863,7 @@ export const czNssAdapter: SourceAdapter = {
         },
         body: formData.toString(),
         redirect: "follow",
-        timeoutMs: ADAPTER_TIMEOUT.REQUEST,
+        timeoutMs: 90_000,
       });
 
       if (!response.ok) {
@@ -823,27 +877,7 @@ export const czNssAdapter: SourceAdapter = {
       // disjoint; a `[\d\s]*` class would overlap the `\s+` that
       // follows, letting the engine re-split every trailing space and
       // costing time quadratic in the length of the page.
-      const countPatterns = [
-        /Nalezeno\s+(?<count>\d+(?:\s\d+)*)\s+záznam/iu,
-        /Celkem\s+(?<count>\d+(?:\s\d+)*)\s+záznam/iu,
-        /(?<!\d)(?<count>\d+(?:\s\d+)*)\s+výsledk/iu,
-        /resCount[^>]*>(?<count>\d[\d\s]*)</iu,
-        /myResCount[^>]*>(?<count>\d[\d\s]*)</iu,
-        /pocetZaznamu[^>]*>(?<count>\d[\d\s]*)</iu,
-      ];
-
-      for (const pattern of countPatterns) {
-        const match = html.match(pattern);
-        if (match?.groups?.["count"]) {
-          const cleaned = match.groups["count"].replace(/\s/gu, "");
-          const parsed = Number.parseInt(cleaned, 10);
-          if (!Number.isNaN(parsed) && parsed > 0) {
-            return parsed;
-          }
-        }
-      }
-
-      return null;
+      return reportedResultCount(html);
     } catch {
       return null;
     }
@@ -949,11 +983,39 @@ export const czNssAdapter: SourceAdapter = {
           };
         }
 
+        // Day-completeness: the court states how many records its own
+        // search matched, so a partial crawl is measurable rather than
+        // inferred. Reported on the page that finishes the day, where the
+        // running total is known (see CLAUDE.md rule 15).
+        const reported = reportedResultCount(searchResult.html);
+        const dayCoverage: SliceCoverage | undefined =
+          reported === null
+            ? undefined
+            : {
+                slice: date,
+                reported,
+                collected: page * RESULTS_PER_PAGE + rows.length,
+              };
+
+        // A full page with no continuation token is not the end of the day
+        // — it is a day whose remainder is unreachable. Advancing here
+        // drops it permanently, because the date cursor only moves forward
+        // and nothing revisits a day once passed. Fail instead: the cursor
+        // is held and the day is retried.
+        if (rows.length >= RESULTS_PER_PAGE) {
+          throw new AdapterFetchError({
+            message: `NSS returned a full page for ${date} (page ${page}) without a continuation token; the rest of the day is unreachable`,
+            adapterKey: ADAPTER_KEYS.CZ_NSS,
+            cursor,
+          });
+        }
+
         // No more pages; advance to next day
         const next = nextDay(date);
         return {
           decisions,
           nextCursor: next <= today ? `${next}:0` : `${today}:0`,
+          ...(dayCoverage === undefined ? {} : { coverage: dayCoverage }),
         };
       },
       catch: adapterCatch(ADAPTER_KEYS.CZ_NSS, cursor),

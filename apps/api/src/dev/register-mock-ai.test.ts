@@ -28,7 +28,12 @@ const structuredOutputSchemaFor = (
 ): unknown => {
   const tanStackSchema = toTanStackValibotSchema(
     schema,
-    providerSafeJsonSchemaOptionsForTanStackProvider(provider),
+    // The mock path's own purpose, not "structured-output": the synthesizer
+    // reads value constraints that real structured output drops.
+    providerSafeJsonSchemaOptionsForTanStackProvider(
+      provider,
+      "mock-structured-output",
+    ),
   );
   return convertSchemaToJsonSchema(tanStackSchema, {
     forStructuredOutput: true,
@@ -96,10 +101,35 @@ const optionalFieldSchema = v.strictObject({
   note: v.optional(v.string()),
 });
 
+// Mirrors apps/api/src/lib/bbox/ai-generate-b-boxes.ts's `bboxOutputSchema`
+// shape: a required array that must be non-empty, plus a bounded number. The
+// synthesizer derives both from the projected schema, so it produces invalid
+// data the moment those constraints stop surviving the projection.
+const boundedCollectionSchema = v.strictObject({
+  boxes: v.pipe(
+    v.array(
+      v.strictObject({
+        // Narrower and wider than the synthesizer's own placeholder, so both
+        // the truncate and the pad path are covered.
+        code: v.pipe(v.string(), v.maxLength(2)),
+        label: v.pipe(v.string(), v.minLength(12)),
+        page: v.pipe(v.number(), v.integer(), v.minValue(1)),
+        // Fractional bounds on integer fields: satisfying the bound must not
+        // break the type. The upper one is negative so it is the binding
+        // constraint rather than the synthesizer's 0 default.
+        rank: v.pipe(v.number(), v.integer(), v.minValue(1.5)),
+        offset: v.pipe(v.number(), v.integer(), v.maxValue(-1.5)),
+      }),
+    ),
+    v.minLength(1),
+  ),
+});
+
 const genericSynthesisBattery = [
   ["real templates/prefill schema", prefillOutputSchema],
   ["novel nested/array/enum/nullable schema", novelSchema],
   ["required-nullable ISO-date schema", nullableIsoDateSchema],
+  ["bounded non-empty collection schema", boundedCollectionSchema],
 ] as const;
 
 describe("mockStructuredData", () => {
@@ -138,11 +168,30 @@ describe("mockStructuredData", () => {
     expect(parsed.required).toBe("mock");
   });
 
-  test("synthesizes the templates/prefill schema as an empty field list", () => {
+  test("keeps the curated templates/prefill fixture", () => {
     const data = mockStructuredData(
       structuredOutputSchemaFor(prefillOutputSchema, "openai"),
     );
-    expect(v.parse(prefillOutputSchema, data)).toEqual({ fields: [] });
+    const { fields } = v.parse(prefillOutputSchema, data);
+    expect(fields.map(({ id }) => id)).toEqual(
+      Array.from({ length: 16 }, (_, index) => `f${index + 1}`),
+    );
+    expect(fields.at(3)).toEqual({
+      id: "f4",
+      value: "Northstar Robotics, Inc.",
+      sourceSnippet:
+        "Northstar Robotics, Inc., a Delaware corporation with offices at 548 Market Street, San Francisco, California 94104, United States",
+    });
+    expect(fields.at(5)).toEqual({
+      id: "f6",
+      value: null,
+      sourceSnippet: null,
+    });
+    expect(fields.at(8)).toEqual({
+      id: "f9",
+      value: null,
+      sourceSnippet: null,
+    });
   });
 
   test("keeps the curated playbook.verdict tier-match fixture", () => {

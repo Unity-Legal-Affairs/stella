@@ -11,10 +11,25 @@ import {
   sql,
   user,
   wsPolicies,
+  timestamptz,
 } from "./common";
 import type { PracticeJurisdiction } from "./common";
 import { workspaces } from "./contacts";
 import { entities } from "./entities";
+
+export const DOCUMENT_PROCESSING_MODE = {
+  OFF: "off",
+  SEARCHABLE_TEXT: "searchable-text",
+} as const;
+
+export const DOCUMENT_PROCESSING_MODES = [
+  DOCUMENT_PROCESSING_MODE.OFF,
+  DOCUMENT_PROCESSING_MODE.SEARCHABLE_TEXT,
+] as const;
+export type DocumentProcessingMode = (typeof DOCUMENT_PROCESSING_MODES)[number];
+
+export const DEFAULT_DOCUMENT_PROCESSING_MODE =
+  "off" as const satisfies DocumentProcessingMode;
 
 export const matterCounters = p.pgTable(
   "matter_counters",
@@ -69,6 +84,17 @@ export const organizationSettings = p.pgTable(
       .boolean("document_stamp_enabled")
       .notNull()
       .default(true),
+    /**
+     * Whether uploaded documents may receive additional processing beyond
+     * their native text layer. Defaults off so an organization must opt in
+     * before OCR-derived searchable text is generated.
+     */
+    documentProcessingMode: p
+      .text("document_processing_mode", {
+        enum: DOCUMENT_PROCESSING_MODES,
+      })
+      .notNull()
+      .default(DEFAULT_DOCUMENT_PROCESSING_MODE),
     practiceJurisdictions: jsonb("practice_jurisdictions")
       .$type<PracticeJurisdiction[]>()
       .notNull()
@@ -131,9 +157,15 @@ export const organizationSettings = p.pgTable(
       .boolean("sharepoint_connection_enabled")
       .notNull()
       .default(false),
-    updatedAt: p.timestamp("updated_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at").notNull().defaultNow(),
   },
-  () => [...orgPolicies()],
+  (table) => [
+    p.check(
+      "organization_settings_document_processing_mode_check",
+      sql`${table.documentProcessingMode} IN ('off', 'searchable-text')`,
+    ),
+    ...orgPolicies(),
+  ],
 );
 
 /**
@@ -173,7 +205,7 @@ export const anonymizationAllowlistEntries = p.pgTable(
     createdBy: p
       .text("created_by")
       .references(() => user.id, { onDelete: "set null" }),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
     p.index("anonymization_allowlist_entries_org_idx").on(table.organizationId),
@@ -230,9 +262,8 @@ export const anonymizationBlacklistEntries = p.pgTable(
     updatedBy: p
       .text("updated_by")
       .references(() => user.id, { onDelete: "set null" }),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
-    updatedAt: p
-      .timestamp("updated_at")
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at")
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),

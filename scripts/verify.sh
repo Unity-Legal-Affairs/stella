@@ -71,14 +71,6 @@ run_step() {
   fi
 }
 
-run_lint() {
-  if [[ -n "$affected_flag" ]]; then
-    bun run lint -- "$affected_flag"
-  else
-    bun run lint
-  fi
-}
-
 run_format() {
   # Call turbo directly: the package `format` scripts take `--check`
   # after `--`, so the affected flag must land before it.
@@ -97,21 +89,11 @@ run_rust_format() {
   cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
 }
 
-run_typecheck() {
-  # tsc processes are memory-hungry; serialize typecheck tasks so
-  # parallel instances cannot exhaust memory on contributor machines.
-  # CI runs lint and typecheck as separate jobs; results match.
-  # The typecheck-cost baseline guard (scripts/typecheck-baseline.ts) is
-  # deliberately NOT run here: like the bundle baseline, it re-runs full
-  # per-project typechecks and is too slow for the local loop. It runs in
-  # its own CI job (typecheck-baseline); its failures point at type-cost growth, not
-  # type errors, so a green verify still matches a green typecheck.
-  if [[ -n "$affected_flag" ]]; then
-    bun run typecheck -- --concurrency=1 "$affected_flag" || return 1
-  else
-    bun run typecheck -- --concurrency=1 || return 1
-  fi
-  bun run typecheck:repo
+run_code_check() {
+  # Oxc performs the repository-wide type-aware lint and type diagnostics in
+  # one pass. The typecheck-cost baseline guard remains CI-only because it
+  # intentionally re-runs every native project to measure compiler workload.
+  bun run code-check
 }
 
 run_typecheck_coverage() {
@@ -189,6 +171,11 @@ run_knip() {
   done
 }
 
+run_quarantine_exclude_guard() {
+  bun test scripts/check-stll-quarantine-excludes.test.ts || return 1
+  bun scripts/check-stll-quarantine-excludes.ts
+}
+
 run_test() {
   if [[ -n "$affected_flag" ]]; then
     bun run test -- --concurrency=2 "$affected_flag"
@@ -200,15 +187,19 @@ run_test() {
 run_step "AI skill sync" bash .ai/shared/scripts/sync-ai-skills.sh --check .
 run_step "Workspace hygiene" bun run lint:ws
 run_step "Lockfile workspace-version guard" bun scripts/check-lockfile-workspace-versions.ts
+run_step "Quarantine-exclude guards" run_quarantine_exclude_guard
 run_step "Policy evidence" bun run policies:check
+run_step "Marketing content evidence" bun run marketing:check
+run_step "Marketing recording verification self-test" bun test \
+  scripts/check-marketing-recordings.test.ts
+run_step "Environment tooling self-test" bun test scripts/env-tool.test.ts
 run_step "Railway template shape" bun run check:railway-template
 run_step "i18n" bun run i18n:check
 run_step "Release changelog guard" bash scripts/check-release-changelog.sh --base "$base_ref"
-run_step "Lint" run_lint
 run_step "Format" run_format
 run_step "Rust format" run_rust_format
 run_step "Typecheck coverage" run_typecheck_coverage
-run_step "Typecheck" run_typecheck
+run_step "Code quality" run_code_check
 if [[ -n "$affected_flag" ]]; then
   run_step "Result consumption" bun run check:result-consumption -- --base "$base_ref"
 else
@@ -217,6 +208,9 @@ fi
 run_step "React Compiler bailout guard" bun scripts/rc-bailouts.ts --check
 run_step "Ratchet guard" run_ratchet_guard
 run_step "Crawl posture guard" run_crawl_posture_guard
+run_step "Documentation source dependency guard self-test" bun test \
+  scripts/docs-source-dependency-guard.test.ts
+run_step "Documentation source dependency guard" bun run check:docs-sources
 run_step "exactMirror route guard" run_exact_mirror_guard
 run_step "MCP coverage guard" run_mcp_coverage_guard
 run_step "CLI registry snapshot" run_cli_registry_snapshot
@@ -231,6 +225,9 @@ run_step "API release contract self-test" bun test \
   --preload ./apps/api/src/tests/setup-env.ts \
   scripts/check-api-cli-contract.test.ts \
   scripts/check-api-deployment.test.ts
+run_step "Release manifest self-test" bash scripts/create-release-manifest.test.sh
+run_step "Maintenance release preparation self-test" bun test \
+  scripts/prepare-maintenance-release.property.test.ts
 run_step "Desktop-release-changes self-test" bash scripts/detect-desktop-release-changes.test.sh
 run_step "Bridge-version guard" bash scripts/check-bridge-version.sh
 

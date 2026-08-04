@@ -111,6 +111,8 @@ const authClientPlugins = [
       preferredName: { type: "string", required: false },
       timezoneId: { type: "string" },
       wordEditShortcut: { type: "string", required: false },
+      userShortcuts: { type: "string", required: false },
+      detectedCountry: { type: "string", required: false },
     },
   }),
   defineBetterAuthClientPlugin(oauthProviderClient()),

@@ -18,13 +18,14 @@ RUN mkdir -p /json && \
 
 FROM base AS pruner
 # Keep in sync with the turbo version in the root package.json.
-RUN bun install -g turbo@2.10.5
+RUN bun install -g turbo@2.10.7
 COPY . .
 RUN turbo prune @stll/legal-atlas-runner --docker
 
 FROM base AS deps
 COPY --from=install-inputs /json/ .
-RUN bun install --filter @stll/legal-atlas-runner --production --frozen-lockfile --ignore-scripts --network-concurrency=8
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --filter @stll/legal-atlas-runner --production --frozen-lockfile --ignore-scripts --network-concurrency=8
 
 FROM deps AS builder
 ENV NODE_ENV=production

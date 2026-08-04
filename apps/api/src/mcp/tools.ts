@@ -9,7 +9,10 @@ import {
   isSkillToolName,
 } from "@/api/lib/mcp-upstream/namespace";
 import type { McpMode } from "@/api/mcp/constants";
-import type { McpRequestContext } from "@/api/mcp/context";
+import {
+  bindApprovedMcpAuditContext,
+  type McpRequestContext,
+} from "@/api/mcp/context";
 import { finalizeMcpEgress } from "@/api/mcp/egress";
 import { dispatchGatewayToolCall } from "@/api/mcp/gateway/dispatch-call";
 import {
@@ -43,13 +46,16 @@ export const getMcpToolDefinition = async (
 ): Promise<McpToolDefinition | undefined> =>
   await getGatewayMcpToolDefinition({ context, mode, toolName });
 
-export const getMcpToolScopeHint = (
+export const getMcpToolRequiredScopesHint = (
   toolName: string,
   mode: McpMode = "default",
-): ToolScope | undefined => {
+): readonly ToolScope[] | undefined => {
   const staticTool = getStaticMcpToolDefinition(toolName, mode);
   if (staticTool) {
-    return staticTool.scope;
+    if (staticTool.additionalScopes === undefined) {
+      return [staticTool.scope];
+    }
+    return [staticTool.scope, ...staticTool.additionalScopes];
   }
 
   if (mode === "anonymized") {
@@ -57,11 +63,11 @@ export const getMcpToolScopeHint = (
   }
 
   if (isExternalMcpToolName(toolName)) {
-    return "stella:external_mcps";
+    return ["stella:external_mcps"];
   }
 
   if (isSkillToolName(toolName)) {
-    return "stella:skills";
+    return ["stella:skills"];
   }
 
   return undefined;
@@ -127,7 +133,7 @@ export const handleMcpToolCall = async ({
   // approved the action. Runs before dispatch so the mutation never starts
   // without the confirmation.
   if (
-    staticTool.annotations?.destructiveHint === true &&
+    staticTool.annotations.destructiveHint === true &&
     args["confirm"] !== true
   ) {
     return structuredErrorResult({
@@ -147,12 +153,20 @@ export const handleMcpToolCall = async ({
   }
 
   try {
+    const executionContext =
+      staticTool.annotations.destructiveHint === true
+        ? bindApprovedMcpAuditContext(context)
+        : context;
     // Handlers never see the mode: they return either a finished result or an
     // egress plan. The central pipeline applies anonymization (anonymized mode)
     // before windowing, then serializes. Both steps run inside this try so an
     // anonymization or windowing failure is captured like any handler failure.
-    const response = await handler({ args, context });
-    return await finalizeMcpEgress({ context, mode, response });
+    const response = await handler({ args, context: executionContext });
+    return await finalizeMcpEgress({
+      context: executionContext,
+      mode,
+      response,
+    });
   } catch (error) {
     captureError(error, { source: "mcp", toolName });
     // Generic message: never leak internals to the caller. `captureError` keeps

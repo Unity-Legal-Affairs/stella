@@ -1,7 +1,17 @@
 import {
+  CHAT_TURN_CANCELLATION_REASONS,
+  CHAT_TURN_FAILURE_CODES,
+  CHAT_TURN_INTERACTION_TYPES,
+  CHAT_TURN_INTERRUPTION_REASONS,
+  CHAT_TURN_STATUSES,
+} from "@/api/handlers/chat/chat-turn-state";
+
+import {
   chatMessageSearchDocumentPolicies,
   chatMessagePolicies,
+  chatTurnPolicies,
   chatThreadCompactionPolicies,
+  chatThreadPreviewPassagePolicies,
   chatThreadSearchDocumentPolicies,
   chatThreadPolicies,
   fileChatThreadPolicies,
@@ -16,6 +26,7 @@ import {
   templateChatThreadPolicies,
   tsvector,
   user,
+  timestamptz,
 } from "./common";
 import type {
   ChatCompactionSummary,
@@ -119,11 +130,10 @@ export const chatThreads = p.pgTable(
     recapText: p.text("recap_text"),
     recapMessageId: safeUuid<"chatMessage">("recap_message_id"),
     recapPromptVersion: p.smallint("recap_prompt_version"),
-    recapGeneratedAt: p.timestamp("recap_generated_at"),
+    recapGeneratedAt: timestamptz("recap_generated_at"),
     usedAnonymization: p.boolean("used_anonymization").notNull().default(false),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
-    updatedAt: p
-      .timestamp("updated_at")
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at")
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
@@ -164,7 +174,7 @@ export const chatMessages = p.pgTable(
       .references(() => user.id, { onDelete: "cascade" }),
     role: p.varchar({ length: 16 }).notNull().$type<ChatMessageRole>(),
     content: jsonb().notNull().$type<PersistedChatMessageContent>(),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
     p
@@ -173,7 +183,208 @@ export const chatMessages = p.pgTable(
     p
       .index("chat_messages_user_workspace_created_idx")
       .on(table.userId, table.workspaceId, table.createdAt),
+    // Prepared online for a later additive composite FK that will make the
+    // message/turn same-thread link declarative without locking chat history.
+    p.uniqueIndex("chat_messages_id_thread_uidx").on(table.id, table.threadId),
     ...chatMessagePolicies(),
+  ],
+);
+
+/**
+ * Durable ownership and settlement for one assistant turn. Message content
+ * remains in chat_messages; every terminal success or failure owns the
+ * assistant message that reload hydration renders.
+ */
+export const chatTurns = p.pgTable(
+  "chat_turns",
+  {
+    id: pUuid<"chatTurn">().primaryKey(),
+    organizationId: safeOrganizationId("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    workspaceId: safeWorkspaceId("workspace_id").references(
+      () => workspaces.id,
+      { onDelete: "restrict" },
+    ),
+    userId: p
+      .text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    threadId: safeUuid<"chatThread">("thread_id")
+      .notNull()
+      .references(() => chatThreads.id, { onDelete: "cascade" }),
+    userMessageId: safeUuid<"chatMessage">("user_message_id").notNull(),
+    assistantMessageId: safeUuid<"chatMessage">("assistant_message_id"),
+    status: p.text({ enum: CHAT_TURN_STATUSES }).notNull().default("accepted"),
+    executionId: p.uuid("execution_id"),
+    leaseExpiresAt: timestamptz("lease_expires_at"),
+    interactionType: p.text("interaction_type", {
+      enum: CHAT_TURN_INTERACTION_TYPES,
+    }),
+    interactionToolCallId: p.text("interaction_tool_call_id"),
+    failureCode: p.text("failure_code", { enum: CHAT_TURN_FAILURE_CODES }),
+    failureRetryable: p.boolean("failure_retryable"),
+    cancellationReason: p.text("cancellation_reason", {
+      enum: CHAT_TURN_CANCELLATION_REASONS,
+    }),
+    interruptionReason: p.text("interruption_reason", {
+      enum: CHAT_TURN_INTERRUPTION_REASONS,
+    }),
+    settledAt: timestamptz("settled_at"),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at")
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => [
+    p
+      .foreignKey({
+        name: "chat_turns_user_message_thread_fk",
+        columns: [table.userMessageId, table.threadId],
+        foreignColumns: [chatMessages.id, chatMessages.threadId],
+      })
+      .onDelete("cascade"),
+    p
+      .foreignKey({
+        name: "chat_turns_assistant_message_thread_fk",
+        columns: [table.assistantMessageId, table.threadId],
+        foreignColumns: [chatMessages.id, chatMessages.threadId],
+      })
+      .onDelete("cascade"),
+    p.check(
+      "chat_turns_status_values_check",
+      sql`${table.status} IN ('accepted', 'running', 'awaiting-user', 'completed', 'failed', 'cancelled', 'interrupted')`,
+    ),
+    p.check(
+      "chat_turns_interaction_values_check",
+      sql`${table.interactionType} IS NULL OR ${table.interactionType} IN ('ask-user', 'approval')`,
+    ),
+    p.check(
+      "chat_turns_failure_code_values_check",
+      sql`${table.failureCode} IS NULL OR ${table.failureCode} IN ('boundary-refusal', 'connector-discovery', 'empty-response', 'internal', 'persistence', 'provider-error', 'unsupported-input')`,
+    ),
+    p.check(
+      "chat_turns_cancellation_reason_values_check",
+      sql`${table.cancellationReason} IS NULL OR ${table.cancellationReason} IN ('superseded', 'user-stop')`,
+    ),
+    p.check(
+      "chat_turns_interruption_reason_values_check",
+      sql`${table.interruptionReason} IS NULL OR ${table.interruptionReason} IN ('client-disconnected', 'timeout')`,
+    ),
+    p.check(
+      "chat_turns_state_payload_check",
+      sql`CASE ${table.status}
+        WHEN 'accepted' THEN
+          ${table.leaseExpiresAt} IS NOT NULL AND
+          ${table.executionId} IS NULL AND
+          ${table.assistantMessageId} IS NULL AND
+          ${table.interactionType} IS NULL AND
+          ${table.interactionToolCallId} IS NULL AND
+          ${table.failureCode} IS NULL AND
+          ${table.failureRetryable} IS NULL AND
+          ${table.cancellationReason} IS NULL AND
+          ${table.interruptionReason} IS NULL AND
+          ${table.settledAt} IS NULL
+        WHEN 'running' THEN
+          ${table.leaseExpiresAt} IS NOT NULL AND
+          ${table.executionId} IS NOT NULL AND
+          ${table.assistantMessageId} IS NULL AND
+          ${table.interactionType} IS NULL AND
+          ${table.interactionToolCallId} IS NULL AND
+          ${table.failureCode} IS NULL AND
+          ${table.failureRetryable} IS NULL AND
+          ${table.cancellationReason} IS NULL AND
+          ${table.interruptionReason} IS NULL AND
+          ${table.settledAt} IS NULL
+        WHEN 'awaiting-user' THEN
+          ${table.leaseExpiresAt} IS NULL AND
+          ${table.executionId} IS NULL AND
+          ${table.assistantMessageId} IS NOT NULL AND
+          ${table.interactionType} IS NOT NULL AND
+          ${table.interactionToolCallId} IS NOT NULL AND
+          ${table.failureCode} IS NULL AND
+          ${table.failureRetryable} IS NULL AND
+          ${table.cancellationReason} IS NULL AND
+          ${table.interruptionReason} IS NULL AND
+          ${table.settledAt} IS NULL
+        WHEN 'completed' THEN
+          ${table.leaseExpiresAt} IS NULL AND
+          ${table.executionId} IS NULL AND
+          ${table.assistantMessageId} IS NOT NULL AND
+          ${table.interactionType} IS NULL AND
+          ${table.interactionToolCallId} IS NULL AND
+          ${table.failureCode} IS NULL AND
+          ${table.failureRetryable} IS NULL AND
+          ${table.cancellationReason} IS NULL AND
+          ${table.interruptionReason} IS NULL AND
+          ${table.settledAt} IS NOT NULL
+        WHEN 'failed' THEN
+          ${table.leaseExpiresAt} IS NULL AND
+          ${table.executionId} IS NULL AND
+          ${table.assistantMessageId} IS NOT NULL AND
+          ${table.interactionType} IS NULL AND
+          ${table.interactionToolCallId} IS NULL AND
+          ${table.failureCode} IS NOT NULL AND
+          ${table.failureRetryable} IS NOT NULL AND
+          ${table.cancellationReason} IS NULL AND
+          ${table.interruptionReason} IS NULL AND
+          ${table.settledAt} IS NOT NULL
+        WHEN 'cancelled' THEN
+          ${table.leaseExpiresAt} IS NULL AND
+          ${table.executionId} IS NULL AND
+          ${table.assistantMessageId} IS NULL AND
+          ${table.interactionType} IS NULL AND
+          ${table.interactionToolCallId} IS NULL AND
+          ${table.failureCode} IS NULL AND
+          ${table.failureRetryable} IS NULL AND
+          ${table.cancellationReason} IS NOT NULL AND
+          ${table.interruptionReason} IS NULL AND
+          ${table.settledAt} IS NOT NULL
+        WHEN 'interrupted' THEN
+          ${table.leaseExpiresAt} IS NULL AND
+          ${table.executionId} IS NULL AND
+          ${table.assistantMessageId} IS NULL AND
+          ${table.interactionType} IS NULL AND
+          ${table.interactionToolCallId} IS NULL AND
+          ${table.failureCode} IS NULL AND
+          ${table.failureRetryable} IS NULL AND
+          ${table.cancellationReason} IS NULL AND
+          ${table.interruptionReason} IS NOT NULL AND
+          ${table.settledAt} IS NOT NULL
+        ELSE false
+      END`,
+    ),
+    p.check(
+      "chat_turns_lease_after_created_check",
+      sql`${table.leaseExpiresAt} IS NULL OR ${table.leaseExpiresAt} > ${table.createdAt}`,
+    ),
+    p.check(
+      "chat_turns_settled_after_created_check",
+      sql`${table.settledAt} IS NULL OR ${table.settledAt} >= ${table.createdAt}`,
+    ),
+    p.index("chat_turns_thread_id_idx").on(table.threadId),
+    p
+      .uniqueIndex("chat_turns_active_thread_uidx")
+      .on(table.threadId)
+      .where(sql`${table.status} IN ('accepted', 'running', 'awaiting-user')`),
+    p
+      .index("chat_turns_org_user_thread_created_idx")
+      .on(
+        table.organizationId,
+        table.userId,
+        table.threadId,
+        table.createdAt,
+        table.id,
+      ),
+    p
+      .index("chat_turns_org_user_message_created_idx")
+      .on(table.organizationId, table.userMessageId, table.createdAt, table.id),
+    p
+      .index("chat_turns_org_active_lease_idx")
+      .on(table.organizationId, table.status, table.leaseExpiresAt, table.id)
+      .where(sql`${table.status} IN ('accepted', 'running')`),
+    ...chatTurnPolicies(),
   ],
 );
 
@@ -194,9 +405,8 @@ export const fileChatThreads = p.pgTable(
     chatThreadId: safeUuid<"chatThread">("chat_thread_id")
       .notNull()
       .references(() => chatThreads.id, { onDelete: "cascade" }),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
-    updatedAt: p
-      .timestamp("updated_at")
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at")
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
@@ -260,9 +470,8 @@ export const templateChatThreads = p.pgTable(
     chatThreadId: safeUuid<"chatThread">("chat_thread_id")
       .notNull()
       .references(() => chatThreads.id, { onDelete: "cascade" }),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
-    updatedAt: p
-      .timestamp("updated_at")
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at")
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
@@ -292,12 +501,39 @@ export const chatThreadSearchDocuments = p.pgTable(
       .references(() => chatThreads.id, { onDelete: "cascade" }),
     title: p.text().notNull().default(""),
     searchableText: p.text("searchable_text").notNull().default(""),
+    previewGeneration: p.uuid("preview_generation"),
     tsv: tsvector(),
-    updatedAt: p.timestamp("updated_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at").notNull().defaultNow(),
   },
   (table) => [
     p.index("chat_thread_search_docs_tsv_idx").using("gin", table.tsv),
     ...chatThreadSearchDocumentPolicies(),
+  ],
+);
+
+export const chatThreadSearchPreviewPassages = p.pgTable(
+  "chat_thread_search_preview_passages",
+  {
+    threadId: safeUuid<"chatThread">("thread_id")
+      .notNull()
+      .references(() => chatThreadSearchDocuments.threadId, {
+        onDelete: "cascade",
+      }),
+    generation: p.uuid().notNull(),
+    ordinal: p.integer().notNull(),
+    content: p.text().notNull(),
+    tsv: tsvector().notNull(),
+  },
+  (table) => [
+    p.primaryKey({
+      columns: [table.threadId, table.generation, table.ordinal],
+      name: "chat_thread_search_preview_passages_pk",
+    }),
+    p
+      .index("chat_thread_preview_passages_lookup_idx")
+      .on(table.threadId, table.generation, table.ordinal),
+    p.index("chat_thread_preview_passages_tsv_idx").using("gin", table.tsv),
+    ...chatThreadPreviewPassagePolicies(),
   ],
 );
 
@@ -313,8 +549,8 @@ export const chatMessageSearchDocuments = p.pgTable(
     role: p.varchar({ length: 16 }).notNull().$type<ChatMessageRole>(),
     searchableText: p.text("searchable_text").notNull().default(""),
     tsv: tsvector(),
-    createdAt: p.timestamp("created_at").notNull(),
-    updatedAt: p.timestamp("updated_at").notNull().defaultNow(),
+    createdAt: timestamptz("created_at").notNull(),
+    updatedAt: timestamptz("updated_at").notNull().defaultNow(),
   },
   (table) => [
     p.index("chat_message_search_docs_tsv_idx").using("gin", table.tsv),
@@ -358,7 +594,7 @@ export const chatThreadCompactions = p.pgTable(
     promptVersion: p.smallint("prompt_version").notNull(),
     modelProvider: p.text("model_provider"),
     modelId: p.text("model_id"),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
     p

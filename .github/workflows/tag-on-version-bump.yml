@@ -30,6 +30,7 @@ jobs:
     # through the merge-to-main review path.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Mint App token
         id: app-token
@@ -44,8 +45,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          token: ${{ steps.app-token.outputs.token }}
-          persist-credentials: true # zizmor: ignore[artipacked] release tag push requires persisted App token
+          fetch-depth: 0 # full history: the marketing-recordings check diffs against each capture's recorded-at commit, which can be arbitrarily far back
+          persist-credentials: false
 
       - name: Read and validate VERSION
         id: version
@@ -72,6 +73,14 @@ jobs:
           VERSION: ${{ steps.version.outputs.value }}
         run: bash scripts/check-release-changelog.sh --version "$VERSION"
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: "package.json"
+
+      # Ahead of the freshness gate: with the tag already pushed this run has
+      # nothing left to create, and failing it on recordings that went stale
+      # after the tag would turn an intended no-op into a red workflow.
       - name: Skip if tag already exists
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -86,12 +95,28 @@ jobs:
             echo "skip=true" >> "$GITHUB_ENV"
           fi
 
+      - name: Warn on stale marketing recordings
+        if: env.skip != 'true'
+        # Reads the committed captures.ts matrix and recordings-manifest.json
+        # only (no node_modules), so no install step is needed. Marketing
+        # freshness is content debt, not a release defect: staleness surfaces
+        # as a workflow warning instead of blocking the tag. Clear it with
+        # `bun run marketing:reshoot` (re-records only the stale captures).
+        run: |
+          if ! bun run marketing:stale --strict; then
+            echo "::warning::Stale marketing recordings (see step log). Re-record with \`bun run marketing:reshoot\`."
+          fi
+
       - name: Push tag
         if: env.skip != 'true'
         env:
           TAG: ${{ steps.version.outputs.tag }}
+          # Injected only for this step: the App token never touches disk via
+          # persisted git credentials, so earlier steps (setup-bun, repo
+          # scripts) run without it available.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           git config user.name "stella-release-deployer[bot]"
           git config user.email "stella-release-deployer[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "$TAG"
-          git push origin "$TAG"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$TAG"

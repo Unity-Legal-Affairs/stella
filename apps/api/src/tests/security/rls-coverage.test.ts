@@ -90,6 +90,8 @@ describe("policy coverage", () => {
     "agent_delegation",
   ]);
   const APPEND_ONLY = new Set(["audit_logs"]);
+  const INSERT_ONLY = new Set(["entity_deletion_cleanup_requests"]);
+  const INSERT_DELETE_ONLY = new Set(["buffer_object_cleanup_intents"]);
   const GLOBAL_CASE_LAW_TABLES = [
     "case_law_citations",
     "case_law_court_weights",
@@ -198,18 +200,30 @@ describe("policy coverage", () => {
     for (const table of wsTables) {
       const tablePolicies = policies.filter((p) => p.table_name === table);
       const cmds = new Set(tablePolicies.map((p) => p.command));
-      expect(cmds).toContain("r"); // SELECT
       expect(cmds).toContain("a"); // INSERT
+      if (INSERT_ONLY.has(table)) {
+        expect(cmds).toEqual(new Set(["a"]));
+      } else if (INSERT_DELETE_ONLY.has(table)) {
+        expect(cmds).toEqual(new Set(["a", "d"]));
+      } else {
+        expect(cmds).toContain("r"); // SELECT
+        if (!APPEND_ONLY.has(table)) {
+          expect(cmds).toContain("w"); // UPDATE
+          expect(cmds).toContain("d"); // DELETE
+        }
+      }
       if (APPEND_ONLY.has(table)) {
         continue;
       }
-      expect(cmds).toContain("w"); // UPDATE
-      expect(cmds).toContain("d"); // DELETE
 
       // Verify expressions reference the correct column
       // AND the correct session variable
       for (const pol of tablePolicies) {
         const expr = pol.command === "a" ? pol.check_expr : pol.using_expr;
+        if (!pol.permissive) {
+          expect(expr).toBe("false");
+          continue;
+        }
         expect(expr).toContain("workspace_id");
         expect(expr).toContain(SETTING_WORKSPACE_IDS);
         expect(expr).toContain(WORKSPACE_ACCESS_VIEW_NAME);
@@ -246,6 +260,10 @@ describe("policy coverage", () => {
       // AND the correct session variable
       for (const pol of tablePolicies) {
         const expr = pol.command === "a" ? pol.check_expr : pol.using_expr;
+        if (!pol.permissive) {
+          expect(expr).toBe("false");
+          continue;
+        }
         expect(expr).toContain("organization_id");
         expect(expr).toContain(SETTING_ORGANIZATION_ID);
       }
@@ -530,7 +548,13 @@ describe("policy coverage", () => {
         .filter((p) => p.table_name === "case_law_sources")
         .map((p) => p.column_name)
         .sort(),
-    ).toEqual(["last_sync_at", "sync_cursor", "updated_at"]);
+    ).toEqual([
+      "checkpoint_observation_order",
+      "last_sync_at",
+      "observation_order",
+      "sync_cursor",
+      "updated_at",
+    ]);
 
     // Append-only audit trail: ingestion may read and append, never
     // mutate or delete prior rows.

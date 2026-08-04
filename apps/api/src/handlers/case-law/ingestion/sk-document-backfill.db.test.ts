@@ -14,10 +14,16 @@ import { drizzle } from "drizzle-orm/bun-sql";
 
 import { authRelationsPart } from "@/api/db/auth-schema";
 import type { ScopedDb } from "@/api/db/safe-db";
-import { caseLawDecisions, caseLawSources, relations } from "@/api/db/schema";
+import {
+  CASE_LAW_CORPUS_MIRROR_STATUS,
+  caseLawDecisions,
+  caseLawSources,
+  relations,
+} from "@/api/db/schema";
 import { ADAPTER_KEYS, PARSER_VERSION } from "@/api/handlers/case-law/consts";
-import { EMPTY_CORPUS_CONTENT_HASHES } from "@/api/handlers/case-law/corpus-storage";
 import type { DocumentAst } from "@/api/handlers/case-law/document-ast";
+import type { SafeId } from "@/api/lib/branded-types";
+import { EMPTY_CORPUS_CONTENT_HASHES } from "@/api/lib/legal-search/corpus-storage";
 import {
   claimDocumentFetch,
   loadPendingDocuments,
@@ -26,9 +32,8 @@ import {
   MAX_PRIORITY_FETCH_ATTEMPTS,
   recordDocumentFetchRequest,
   storeBackfilledDocument,
-} from "@/api/handlers/case-law/ingestion/sk-document-backfill";
-import type { PendingDocument } from "@/api/handlers/case-law/ingestion/sk-document-backfill";
-import type { SafeId } from "@/api/lib/branded-types";
+} from "@/api/lib/legal-search/sk-document-backfill";
+import type { PendingDocument } from "@/api/lib/legal-search/sk-document-backfill";
 
 /**
  * Wide enough to hold the whole queue on the migrated-but-unseeded
@@ -128,6 +133,11 @@ if (!databaseUrl || !runPostgresTests) {
       documentFetchAttempts?: number;
       sourceHash?: string;
       contentHash?: string;
+      corpusMirrorStatus?:
+        | typeof CASE_LAW_CORPUS_MIRROR_STATUS.PENDING
+        | typeof CASE_LAW_CORPUS_MIRROR_STATUS.SETTLED;
+      sourceObservationHash?: string;
+      sourceObservationOrder?: bigint;
     }) => {
       const [row] = await db
         .insert(caseLawDecisions)
@@ -145,6 +155,9 @@ if (!databaseUrl || !runPostgresTests) {
           documentFetchAttempts: values.documentFetchAttempts,
           sourceHash: values.sourceHash,
           contentHash: values.contentHash,
+          corpusMirrorStatus: values.corpusMirrorStatus,
+          sourceObservationHash: values.sourceObservationHash,
+          sourceObservationOrder: values.sourceObservationOrder,
         })
         .returning({ id: caseLawDecisions.id });
       if (!row) {
@@ -293,6 +306,28 @@ if (!databaseUrl || !runPostgresTests) {
           ),
         );
       expect(row?.fulltext).toBe("");
+    });
+
+    test("marking unavailable invalidates pending corpus ownership", async () => {
+      const id = await insertDecision({
+        caseNumber: `unavailable-pending-${suffix}`,
+        corpusMirrorStatus: CASE_LAW_CORPUS_MIRROR_STATUS.PENDING,
+        fulltext: null,
+        documentUrl: "https://example.test/unavailable-pending.pdf",
+        sourceObservationHash: "pending-hash",
+        sourceObservationOrder: 7n,
+      });
+
+      await markDocumentUnavailable(id, scopedDb);
+
+      const row = await db.query.caseLawDecisions.findFirst({
+        where: { id: { eq: id } },
+        columns: { corpusMirrorStatus: true, fulltext: true },
+      });
+      expect(row).toEqual({
+        corpusMirrorStatus: CASE_LAW_CORPUS_MIRROR_STATUS.SETTLED,
+        fulltext: "",
+      });
     });
 
     test("a second store cannot overwrite the document already there", async () => {

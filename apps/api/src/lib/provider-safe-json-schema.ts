@@ -49,7 +49,25 @@ export const PROVIDER_SAFE_JSON_SCHEMA_KEYWORDS = [
   "example",
 ] as const;
 
+/**
+ * Allowlisted keywords that constrain a value rather than describe its shape.
+ * Dropped under `valueConstraintStrategy: "omit"`; the source Standard Schema
+ * still enforces them locally. The `satisfies` keeps this a subset of the
+ * allowlist, so a keyword can never be omitted here yet unreachable there.
+ */
+export const VALUE_CONSTRAINT_JSON_SCHEMA_KEYWORDS = [
+  "minimum",
+  "maximum",
+  "minItems",
+  "maxItems",
+  "minLength",
+  "maxLength",
+] as const satisfies readonly (typeof PROVIDER_SAFE_JSON_SCHEMA_KEYWORDS)[number][];
+
 const ALLOWED_KEYWORDS = new Set<string>(PROVIDER_SAFE_JSON_SCHEMA_KEYWORDS);
+const VALUE_CONSTRAINT_KEYWORDS = new Set<string>(
+  VALUE_CONSTRAINT_JSON_SCHEMA_KEYWORDS,
+);
 const ALLOWED_TYPE_VALUES = new Set([
   "array",
   "boolean",
@@ -69,20 +87,44 @@ export type ProviderSafeJsonSchemaProjection = {
 
 export type NullUnionStrategy = "json-schema" | "openapi";
 export type EnumValueStrategy = "json-schema" | "string-only";
+export type ValueConstraintStrategy = "preserve" | "omit";
+export type ProviderJsonSchemaPurpose =
+  | "structured-output"
+  | "mock-structured-output"
+  | "tool";
 
 export type ProviderSafeJsonSchemaProjectionOptions = {
   enumValueStrategy?: EnumValueStrategy;
   nullUnionStrategy?: NullUnionStrategy;
+  valueConstraintStrategy?: ValueConstraintStrategy;
 };
 
 export const providerSafeJsonSchemaOptionsForTanStackProvider = (
   provider: string,
+  purpose: ProviderJsonSchemaPurpose,
 ): ProviderSafeJsonSchemaProjectionOptions => ({
   enumValueStrategy:
     provider === "google" || provider === "openrouter"
       ? "string-only"
       : "json-schema",
   nullUnionStrategy: provider === "google" ? "openapi" : "json-schema",
+  // Constrained-decoding compilers reject value constraints outright
+  // (Anthropic: HTTP 400 `For 'array' type, property 'maxItems' is not
+  // supported`) or count them against an undocumented schema complexity
+  // budget (Gemini). The set of rejecting providers is not knowable per
+  // request either: an OpenRouter model id resolves to an arbitrary upstream.
+  // Constraints are validation, not shape, and the original Standard Schema
+  // still validates the returned value locally, so structured output drops
+  // them for every provider.
+  //
+  // The other two purposes have no schema compiler to protect. Tool arguments
+  // are sampled directly, so their bounds stay useful guidance. The mock
+  // adapter goes further and *synthesizes* a response by walking these very
+  // keywords, so dropping them would hand it a schema it cannot satisfy: a
+  // required array would lose `minItems`, synthesize `[]`, and fail the
+  // caller's own `v.parse`.
+  valueConstraintStrategy:
+    purpose === "structured-output" ? "omit" : "preserve",
 });
 
 const isJsonObject = (value: unknown): value is JsonObject =>
@@ -120,6 +162,7 @@ type ProjectionContext = {
   dropped: string[];
   enumValueStrategy: EnumValueStrategy;
   nullUnionStrategy: NullUnionStrategy;
+  valueConstraintStrategy: ValueConstraintStrategy;
 };
 
 type NormalizeSchemaDialectParams = {
@@ -850,6 +893,13 @@ const filterProviderSafeKeywords = ({
 }): JsonObject => {
   const result: JsonObject = {};
   for (const [key, value] of Object.entries(node)) {
+    if (
+      context.valueConstraintStrategy === "omit" &&
+      VALUE_CONSTRAINT_KEYWORDS.has(key)
+    ) {
+      context.dropped.push(joinPath(path, key));
+      continue;
+    }
     if (!ALLOWED_KEYWORDS.has(key)) {
       context.dropped.push(joinPath(path, key));
       continue;
@@ -919,6 +969,7 @@ export const projectToProviderSafeJsonSchema = (
       options.enumValueStrategy ??
       (nullUnionStrategy === "openapi" ? "string-only" : "json-schema"),
     nullUnionStrategy,
+    valueConstraintStrategy: options.valueConstraintStrategy ?? "preserve",
   };
   const projected = projectNode({
     node: schema,

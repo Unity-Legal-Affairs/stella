@@ -1,16 +1,21 @@
 import {
+  ENTITY_DELETION_CLEANUP_STATUSES,
   ENTITY_KINDS,
   TASK_ASSIGNEE_ROLES,
   isNotNull,
   jsonb,
   organization,
+  organizationCheck,
   p,
   pUuid,
   safeOrganizationId,
   safeUuid,
   safeWorkspaceId,
   sql,
+  stella,
+  timestamptz,
   user,
+  workspaceCheck,
   wsPolicies,
 } from "./common";
 import type {
@@ -22,6 +27,7 @@ import type {
   BoundingBoxes,
   CellMetadata,
   DocumentSource,
+  EntityDeletionCleanupStatus,
   FieldContent,
   JustificationContent,
   LinkMetadata,
@@ -68,10 +74,10 @@ export const entities = p.pgTable(
     agendaKind: p.text("agenda_kind", {
       enum: ["task", "deadline", "meeting", "hearing", "event"],
     }),
-    startAt: p.timestamp("start_at", { withTimezone: true }),
-    endAt: p.timestamp("end_at", { withTimezone: true }),
-    occurredAt: p.timestamp("occurred_at", { withTimezone: true }),
-    remindAt: p.timestamp("remind_at", { withTimezone: true }),
+    startAt: timestamptz("start_at"),
+    endAt: timestamptz("end_at"),
+    occurredAt: timestamptz("occurred_at"),
+    remindAt: timestamptz("remind_at"),
     allDay: p.boolean("all_day").notNull().default(false),
     timeZone: p.varchar("time_zone", { length: 64 }),
     location: p.text("location"),
@@ -104,8 +110,8 @@ export const entities = p.pgTable(
     sortOrder: p.varchar("sort_order", { length: 64 }),
     /** Structured metadata for non-document entity kinds (e.g. links). */
     metadata: jsonb().$type<LinkMetadata | null>(),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
-    updatedAt: p.timestamp("updated_at").defaultNow(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at").defaultNow(),
   },
   (table) => [
     p.index("entities_workspace_id_idx").on(table.workspaceId),
@@ -119,7 +125,7 @@ export const entities = p.pgTable(
       .index("entities_ws_updated_at_coalesce_id_idx")
       .on(
         table.workspaceId,
-        sql`COALESCE(${table.updatedAt}, '0001-01-01 00:00:00'::timestamp)`,
+        sql`COALESCE(${table.updatedAt}, '0001-01-01 00:00:00+00'::timestamptz)`,
         table.id,
       ),
     p
@@ -174,6 +180,64 @@ export const entities = p.pgTable(
   ],
 );
 
+/**
+ * Durable S3 cleanup work created in the same transaction as an entity delete.
+ * It deliberately does not reference the deleted entity: the record must
+ * survive the cascade so a queue retry can complete the storage erasure.
+ */
+export const entityDeletionCleanupRequests = p.pgTable(
+  "entity_deletion_cleanup_requests",
+  {
+    id: pUuid<"entityDeletionCleanupRequest">().primaryKey(),
+    organizationId: safeOrganizationId("organization_id").notNull(),
+    workspaceId: safeWorkspaceId("workspace_id").notNull(),
+    s3Keys: p.text("s3_keys").array().notNull(),
+    status: p
+      .text("status", { enum: ENTITY_DELETION_CLEANUP_STATUSES })
+      .$type<EntityDeletionCleanupStatus>()
+      .notNull()
+      .default("pending"),
+    attemptCount: p.integer("attempt_count").notNull().default(0),
+    errorMessage: p.text("error_message"),
+    nextAttemptAt: timestamptz("next_attempt_at"),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at")
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+    completedAt: timestamptz("completed_at"),
+  },
+  (table) => [
+    p
+      .index("entity_deletion_cleanup_pending_schedule_idx")
+      .on(table.createdAt, table.id)
+      .where(sql`${table.status} = 'pending'`),
+    p
+      .index("entity_deletion_cleanup_failed_schedule_idx")
+      .on(table.nextAttemptAt, table.id)
+      .where(sql`${table.status} = 'failed'`),
+    p
+      .index("entity_deletion_cleanup_processing_lease_idx")
+      .on(table.updatedAt, table.id)
+      .where(sql`${table.status} = 'processing'`),
+    p.check(
+      "entity_deletion_cleanup_status_values_check",
+      sql`${table.status} IN ('pending', 'processing', 'completed', 'failed')`,
+    ),
+    p.check(
+      "entity_deletion_cleanup_attempt_count_nonnegative_check",
+      sql`${table.attemptCount} >= 0`,
+    ),
+    // The delete request may create this outbox row through its scoped
+    // transaction; all later reads and state transitions are root-worker only.
+    p.pgPolicy("entity_deletion_cleanup_insert", {
+      for: "insert",
+      to: stella,
+      withCheck: sql`${workspaceCheck} AND ${organizationCheck}`,
+    }),
+  ],
+);
+
 export const taskAssignees = p.pgTable(
   "task_assignees",
   {
@@ -189,7 +253,7 @@ export const taskAssignees = p.pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
     role: p.text("role", { enum: TASK_ASSIGNEE_ROLES }).notNull(),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
     p.index("task_assignees_workspace_id_idx").on(table.workspaceId),
@@ -219,7 +283,7 @@ export const entityLinks = p.pgTable(
       .varchar("link_type", { length: 32 })
       .notNull()
       .default("related"),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
     p.index("entity_links_workspace_id_idx").on(table.workspaceId),
@@ -272,7 +336,7 @@ export const entityVersions = p.pgTable(
      * slice. Null on legacy rows and creation paths not yet threaded.
      */
     source: jsonb("source").$type<DocumentSource | null>(),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
     /**
      * Chain-of-custody tombstone. A non-null `deletedAt` hides the version
      * from every read / list / restore / download path while its row and S3
@@ -280,7 +344,7 @@ export const entityVersions = p.pgTable(
      * hard-deleted. `deletedBy` mirrors `createdBy` (plain user id, no FK) so
      * the actor survives a user deletion.
      */
-    deletedAt: p.timestamp("deleted_at"),
+    deletedAt: timestamptz("deleted_at"),
     deletedBy: p.text("deleted_by"),
   },
   (table) => [
@@ -322,7 +386,7 @@ export const entityVersionAiSummaries = p.pgTable(
     language: p.varchar("language", { length: 10 }),
     modelProvider: p.varchar("model_provider", { length: 64 }).notNull(),
     modelId: p.varchar("model_id", { length: 256 }).notNull(),
-    generatedAt: p.timestamp("generated_at").notNull().defaultNow(),
+    generatedAt: timestamptz("generated_at").notNull().defaultNow(),
   },
   (table) => [
     p.index("entity_version_ai_summaries_workspace_idx").on(table.workspaceId),
@@ -389,21 +453,20 @@ export const desktopEditSessions = p.pgTable(
     checkpointScanWarnings: jsonb("checkpoint_scan_warnings").$type<
       string[] | null
     >(),
-    checkpointUpdatedAt: p.timestamp("checkpoint_updated_at"),
+    checkpointUpdatedAt: timestamptz("checkpoint_updated_at"),
     sessionTokenHash: p.varchar("session_token_hash", { length: 64 }).notNull(),
-    tokenExpiresAt: p.timestamp("token_expires_at").notNull(),
+    tokenExpiresAt: timestamptz("token_expires_at").notNull(),
     takeoverRequestedBy: p
       .text("takeover_requested_by")
       .references(() => user.id, { onDelete: "set null" }),
-    takeoverRequestedAt: p.timestamp("takeover_requested_at"),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
-    updatedAt: p
-      .timestamp("updated_at")
+    takeoverRequestedAt: timestamptz("takeover_requested_at"),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at")
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
-    closedAt: p.timestamp("closed_at"),
-    expiryNotificationPublishedAt: p.timestamp(
+    closedAt: timestamptz("closed_at"),
+    expiryNotificationPublishedAt: timestamptz(
       "expiry_notification_published_at",
     ),
   },
@@ -420,6 +483,11 @@ export const desktopEditSessions = p.pgTable(
     p
       .uniqueIndex("desktop_edit_sessions_open_uidx")
       .on(table.createdBy, table.entityId, table.propertyId)
+      .where(sql`${table.status} = 'open'`),
+    // Selects the oldest live session per entity for table/window reads.
+    p
+      .index("desktop_edit_sessions_live_entity_created_id_idx")
+      .on(table.workspaceId, table.entityId, table.createdAt, table.id)
       .where(sql`${table.status} = 'open'`),
     // Serves the hourly expiry sweep: scan open sessions ordered by token TTL.
     p
@@ -473,15 +541,14 @@ export const desktopEditHandoffs = p.pgTable(
       "linked_account",
     ).$type<DesktopEditLinkedAccountSnapshot | null>(),
     forceTakeover: p.boolean("force_takeover").notNull().default(false),
-    expiresAt: p.timestamp("expires_at").notNull(),
-    consumedAt: p.timestamp("consumed_at"),
+    expiresAt: timestamptz("expires_at").notNull(),
+    consumedAt: timestamptz("consumed_at"),
     desktopSessionId: safeUuid<"desktopEditSession">(
       "desktop_session_id",
     ).references(() => desktopEditSessions.id, { onDelete: "set null" }),
-    openedAt: p.timestamp("opened_at"),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
-    updatedAt: p
-      .timestamp("updated_at")
+    openedAt: timestamptz("opened_at"),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at")
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
@@ -535,7 +602,7 @@ export const folioCollabSessions = p.pgTable(
     fileName: p.varchar("file_name", { length: 256 }).notNull(),
     yjsSnapshotFileId: safeUuid<"userFile">("yjs_snapshot_file_id").notNull(),
     yjsSnapshotSizeBytes: p.integer("yjs_snapshot_size_bytes"),
-    yjsSnapshotUpdatedAt: p.timestamp("yjs_snapshot_updated_at"),
+    yjsSnapshotUpdatedAt: timestamptz("yjs_snapshot_updated_at"),
     docxCheckpointFileId: safeUuid<"userFile">(
       "docx_checkpoint_file_id",
     ).notNull(),
@@ -546,19 +613,18 @@ export const folioCollabSessions = p.pgTable(
     docxCheckpointScanWarnings: jsonb("docx_checkpoint_scan_warnings").$type<
       string[] | null
     >(),
-    docxCheckpointUpdatedAt: p.timestamp("docx_checkpoint_updated_at"),
+    docxCheckpointUpdatedAt: timestamptz("docx_checkpoint_updated_at"),
     seedClaimedBy: p.text("seed_claimed_by").references(() => user.id, {
       onDelete: "set null",
     }),
-    seedClaimedAt: p.timestamp("seed_claimed_at"),
-    seededAt: p.timestamp("seeded_at"),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
-    updatedAt: p
-      .timestamp("updated_at")
+    seedClaimedAt: timestamptz("seed_claimed_at"),
+    seededAt: timestamptz("seeded_at"),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at")
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
-    closedAt: p.timestamp("closed_at"),
+    closedAt: timestamptz("closed_at"),
   },
   (table) => [
     p.index("folio_collab_sessions_workspace_id_idx").on(table.workspaceId),
@@ -605,8 +671,8 @@ export const folioCollabSessionTokens = p.pgTable(
     permissions: jsonb("permissions")
       .$type<FolioCollabTokenPermissions>()
       .notNull(),
-    expiresAt: p.timestamp("expires_at").notNull(),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
+    expiresAt: timestamptz("expires_at").notNull(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (table) => [
     p
@@ -641,6 +707,11 @@ export const PENDING_UPLOAD_STATUSES = [
   "failed",
 ] as const;
 
+export const PENDING_UPLOAD_RECOVERABLE_STATUSES = [
+  "scanning",
+  "failed",
+] as const satisfies readonly (typeof PENDING_UPLOAD_STATUSES)[number][];
+
 /**
  * Each upload purpose drives a different finalize transaction (entity
  * vs. version vs. skill...). The discriminator lives in its own column
@@ -658,10 +729,22 @@ export type PendingUploadPurposeData =
   | {
       type: "entity_create";
       propertyId: SafeId<"property">;
+      /**
+       * Final object id reserved by trusted server-side writers. Persisting it
+       * before S3 publication lets the bounded reconciler derive and remove a
+       * final-key object left behind by a hard process death.
+       */
+      reservedFileId?: string;
     }
   | {
       type: "entity_version";
       entityId: SafeId<"entity">;
+      /**
+       * Final object id reserved by trusted server-side writers. Persisting it
+       * before S3 publication lets the bounded reconciler derive and remove a
+       * final-key object left behind by a hard process death.
+       */
+      reservedFileId?: string;
     }
   | {
       type: "agent_skill";
@@ -726,12 +809,12 @@ export const pendingUploads = p.pgTable(
     ).$type<PendingUploadFinalizedResult | null>(),
     rejectReason: p.text("reject_reason"),
     /** Set inside the claim transaction. Used to detect stuck `scanning` rows. */
-    claimedAt: p.timestamp("claimed_at"),
+    claimedAt: timestamptz("claimed_at"),
     claimedByRequestId: p.varchar("claimed_by_request_id", { length: 64 }),
     /** `createdAt + 5min`. A finalize after this rejects without touching S3. */
-    expiresAt: p.timestamp("expires_at").notNull(),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
-    finalizedAt: p.timestamp("finalized_at"),
+    expiresAt: timestamptz("expires_at").notNull(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    finalizedAt: timestamptz("finalized_at"),
   },
   (table) => [
     p
@@ -740,7 +823,56 @@ export const pendingUploads = p.pgTable(
     p
       .index("pending_uploads_org_created_idx")
       .on(table.organizationId, table.createdAt),
+    p
+      .index("pending_uploads_buffer_intent_recovery_idx")
+      .on(table.claimedAt, table.id)
+      .where(
+        sql`${table.status} IN ('scanning', 'failed')
+          AND ${table.purpose} IN ('entity_create', 'entity_version')
+          AND ${table.purposeData}->>'reservedFileId' IS NOT NULL`,
+      ),
     ...wsPolicies(),
+  ],
+);
+
+/**
+ * Durable tombstones for server-generated object writes interrupted by a
+ * workspace or account deletion. They intentionally have no foreign keys:
+ * recovery must survive both workspace cascades and user cleanup until the
+ * original writer confirms that it can no longer publish the reserved key.
+ */
+export const bufferObjectCleanupIntents = p.pgTable(
+  "buffer_object_cleanup_intents",
+  {
+    id: pUuid<"pendingUpload">().primaryKey(),
+    organizationId: safeOrganizationId("organization_id").notNull(),
+    workspaceId: safeWorkspaceId("workspace_id").notNull(),
+    objectKey: p.text("object_key").notNull(),
+    attemptCount: p.integer("attempt_count").notNull().default(0),
+    nextAttemptAt: timestamptz("next_attempt_at").notNull().defaultNow(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    p
+      .index("buffer_object_cleanup_schedule_idx")
+      .on(table.nextAttemptAt, table.id),
+    p.check(
+      "buffer_object_cleanup_attempt_count_nonnegative_check",
+      sql`${table.attemptCount} >= 0`,
+    ),
+    // Lifecycle deletion may transfer the intent through its scoped
+    // transaction. The original scoped writer may remove it only after its
+    // PUT settles and exact-key cleanup succeeds; retry reads stay root-only.
+    p.pgPolicy("buffer_object_cleanup_insert", {
+      for: "insert",
+      to: stella,
+      withCheck: sql`${workspaceCheck} AND ${organizationCheck}`,
+    }),
+    p.pgPolicy("buffer_object_cleanup_delete", {
+      for: "delete",
+      to: stella,
+      using: sql`${workspaceCheck} AND ${organizationCheck}`,
+    }),
   ],
 );
 
@@ -767,6 +899,16 @@ export const fields = p.pgTable(
       .index("fields_pending_workspace_idx")
       .on(table.workspaceId)
       .where(sql`${table.content}->>'type' = 'pending'`),
+    // Bounded document-processing recovery has a global ID cursor, so its
+    // partial candidate index must start with that cursor column.
+    p
+      .index("fields_document_processing_pdf_candidate_idx")
+      .on(table.id, table.workspaceId, table.entityVersionId)
+      .where(
+        sql`${table.content}->>'type' = 'file'
+          AND ${table.content}->>'mimeType' = 'application/pdf'
+          AND ${table.content}->>'encrypted' = 'false'`,
+      ),
     p
       .foreignKey({
         columns: [table.propertyId, table.workspaceId],
@@ -794,8 +936,8 @@ export const cellMetadata = p.pgTable(
     updatedBy: p
       .text("updated_by")
       .references(() => user.id, { onDelete: "set null" }),
-    createdAt: p.timestamp("created_at").notNull().defaultNow(),
-    updatedAt: p.timestamp("updated_at").notNull().defaultNow(),
+    createdAt: timestamptz("created_at").notNull().defaultNow(),
+    updatedAt: timestamptz("updated_at").notNull().defaultNow(),
   },
   (table) => [
     p.primaryKey({

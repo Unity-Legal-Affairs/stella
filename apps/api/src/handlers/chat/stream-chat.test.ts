@@ -1,5 +1,5 @@
 import { EventType, StreamProcessor } from "@tanstack/ai";
-import type { ModelMessage, StreamChunk } from "@tanstack/ai";
+import type { ModelMessage, StreamChunk, ToolCallPart } from "@tanstack/ai";
 import { Result } from "better-result";
 import { describe, expect, test } from "bun:test";
 
@@ -7,22 +7,26 @@ import { CHAT_SEND_MODE } from "@stll/anonymize-chat";
 import { createPipelineContext } from "@stll/anonymize-wasm";
 
 import type { ScopedDb } from "@/api/db/safe-db";
-import { createChatAttachmentPart } from "@/api/handlers/chat/chat-message-parts";
+import {
+  createChatAttachmentPart,
+  toPersistableChatMessage,
+} from "@/api/handlers/chat/chat-message-parts";
 import type { ChatThirdPartyBoundary } from "@/api/handlers/chat/third-party-boundary";
-import { createChatRefRegistry } from "@/api/handlers/chat/tools/execute/ref-registry";
 import type {
   ChatAnonRestoration,
   ChatMessage,
 } from "@/api/handlers/chat/types";
-import { toUserFileUrl } from "@/api/handlers/user-files/types";
 import { toSafeId } from "@/api/lib/branded-types";
+import { createChatRefRegistry } from "@/api/lib/chat/ref-registry";
 import {
   ChatEmptyCompletionError,
   ChatLoopDetectedError,
 } from "@/api/lib/errors/tagged-errors";
+import { toUserFileUrl } from "@/api/lib/user-files/types";
 import { PDF_MIME_TYPE } from "@/api/mime-types";
 import { createScopedDbMock } from "@/api/tests/scoped-db-mock";
 
+import { richChatParts } from "./__fixtures__/rich-chat-parts";
 import {
   chatMessageUsageFromTokenUsage,
   collectInitialRestorationPlaceholders,
@@ -32,8 +36,10 @@ import {
   hydrateMessages,
   normalizeFinalAssistantMessageId,
   processServerChatStream,
+  pruneOrphanedToolParts,
   recordChatAttemptFinish,
   remapOutgoingMessageIds,
+  toChatMessage,
   transformOutgoingStream,
 } from "./stream-chat";
 
@@ -78,7 +84,141 @@ const scopedDb: ScopedDb = async () => {
   throw new Error("Expected stream deanonymization test not to access DB");
 };
 
+describe("tool-call history pruning", () => {
+  test("classifies every TanStack tool-call state and retains terminal errors", () => {
+    const states = [
+      "awaiting-input",
+      "input-streaming",
+      "input-complete",
+      "approval-requested",
+      "approval-responded",
+      "complete",
+      "error",
+    ] as const;
+    const message = {
+      id: "assistant-1",
+      parts: states.map((state) => ({
+        arguments: "{}",
+        id: `tool-${state}`,
+        name: "web_search",
+        state,
+        type: "tool-call" as const,
+      })),
+      role: "assistant" as const,
+    } satisfies ChatMessage;
+
+    const prunedMessage = pruneOrphanedToolParts([message]).at(0);
+
+    expect(
+      prunedMessage?.parts.flatMap((part) =>
+        part.type === "tool-call" ? [part.state] : [],
+      ),
+    ).toEqual(["input-complete", "approval-responded", "complete", "error"]);
+  });
+});
+
 describe("outgoing chat stream message ids", () => {
+  test("requires an input-complete event before ask-user takes terminal ownership", async () => {
+    const messageId = toSafeId<"chatMessage">(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    const askUserCallSequences = [
+      [
+        {
+          type: EventType.TOOL_CALL_START,
+          parentMessageId: "provider-message",
+          toolCallId: "ask-awaiting-input",
+          toolCallName: "ask-user",
+          // eslint-disable-next-line typescript/no-deprecated -- AG-UI still requires the compatibility field.
+          toolName: "ask-user",
+        },
+      ],
+      [
+        {
+          type: EventType.TOOL_CALL_START,
+          parentMessageId: "provider-message",
+          toolCallId: "ask-input-complete",
+          toolCallName: "ask-user",
+          // eslint-disable-next-line typescript/no-deprecated -- AG-UI still requires the compatibility field.
+          toolName: "ask-user",
+        },
+        {
+          type: EventType.TOOL_CALL_ARGS,
+          delta: '{"question":"Which jurisdiction applies?"}',
+          toolCallId: "ask-input-complete",
+        },
+        {
+          type: EventType.TOOL_CALL_END,
+          input: { question: "Which jurisdiction applies?" },
+          toolCallId: "ask-input-complete",
+          toolCallName: "ask-user",
+          // eslint-disable-next-line typescript/no-deprecated -- AG-UI still requires the compatibility field.
+          toolName: "ask-user",
+        },
+      ],
+      [
+        {
+          type: EventType.TOOL_CALL_START,
+          parentMessageId: "provider-message",
+          toolCallId: "ask-input-streaming",
+          toolCallName: "ask-user",
+          // eslint-disable-next-line typescript/no-deprecated -- AG-UI still requires the compatibility field.
+          toolName: "ask-user",
+        },
+        {
+          type: EventType.TOOL_CALL_ARGS,
+          delta: '{"question":"Which',
+          toolCallId: "ask-input-streaming",
+        },
+      ],
+    ] as const satisfies readonly (readonly StreamChunk[])[];
+
+    const terminalOutcomes = await Promise.all(
+      askUserCallSequences.map(async (callChunks) => {
+        let responseMessage: ChatMessage | null = null;
+        let resolveTerminalOutcome: (outcome: string) => void;
+        const terminalOutcome = new Promise<string>((resolve) => {
+          resolveTerminalOutcome = resolve;
+        });
+        const processor = new StreamProcessor({
+          events: {
+            onStreamEnd: (message) => {
+              responseMessage = toChatMessage(message);
+            },
+          },
+        });
+        const stream = processServerChatStream({
+          abortSignal: new AbortController().signal,
+          getResponseMessage: () => responseMessage,
+          mapMessageId: createChatMessageIdMapper(() => messageId),
+          onFinish: ({ outcome }) => {
+            resolveTerminalOutcome(outcome.type);
+          },
+          processor,
+          source: streamChunks([
+            {
+              type: EventType.RUN_STARTED,
+              runId: "run-1",
+              threadId: "thread-1",
+            },
+            ...callChunks,
+            {
+              type: EventType.RUN_FINISHED,
+              finishReason: "tool_calls",
+              runId: "run-1",
+              threadId: "thread-1",
+            },
+          ]),
+        });
+
+        await collectChunks(stream);
+        return await terminalOutcome;
+      }),
+    );
+
+    expect(terminalOutcomes).toEqual(["failed", "awaiting-user", "failed"]);
+  });
+
   test("normalizes provider assistant message ids to one stable stella UUID", async () => {
     const firstId = toSafeId<"chatMessage">(
       "11111111-1111-4111-8111-111111111111",
@@ -201,23 +341,25 @@ describe("outgoing chat stream message ids", () => {
           ],
         },
       }),
-    ).toEqual({
-      id: messageId,
-      role: "assistant",
-      parts: [
-        {
-          content: "Checking source law.",
-          type: "thinking",
-        },
-        {
-          arguments: "{}",
-          id: "tool-1",
-          name: "ask-user",
-          state: "input-complete",
-          type: "tool-call",
-        },
-      ],
-    });
+    ).toEqual(
+      toPersistableChatMessage({
+        id: messageId,
+        role: "assistant",
+        parts: [
+          {
+            content: "Checking source law.",
+            type: "thinking",
+          },
+          {
+            arguments: "{}",
+            id: "tool-1",
+            name: "ask-user",
+            state: "input-complete",
+            type: "tool-call",
+          },
+        ],
+      }),
+    );
   });
 
   test("seeds tanstack message state before reasoning-only chunks", async () => {
@@ -369,6 +511,341 @@ describe("outgoing chat stream message ids", () => {
     ]);
   });
 
+  test("flushes a completed primary run before a fallback run starts", async () => {
+    const messageId = toSafeId<"chatMessage">(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    let responseMessage: ChatMessage | null = null;
+    const processor = new StreamProcessor({
+      events: {
+        onStreamEnd: (message) => {
+          responseMessage = {
+            id: message.id,
+            parts: [{ content: "Fallback answer", type: "text" }],
+            role: "assistant",
+          };
+        },
+      },
+    });
+    const persistedTexts: string[] = [];
+    const stream = processServerChatStream({
+      abortSignal: new AbortController().signal,
+      getResponseMessage: () => responseMessage,
+      mapMessageId: createChatMessageIdMapper(() => messageId),
+      onFinish: ({ responseMessage: finishedMessage }) => {
+        persistedTexts.push(
+          finishedMessage.parts
+            .map((part) => (part.type === "text" ? part.content : ""))
+            .join(""),
+        );
+      },
+      processor,
+      source: streamChunks([
+        {
+          type: EventType.RUN_STARTED,
+          runId: "primary-run",
+          threadId: "thread-1",
+        },
+        {
+          type: EventType.RUN_FINISHED,
+          finishReason: "stop",
+          runId: "primary-run",
+          threadId: "thread-1",
+        },
+        {
+          type: EventType.RUN_STARTED,
+          runId: "fallback-run",
+          threadId: "thread-1",
+        },
+        {
+          type: EventType.TEXT_MESSAGE_START,
+          messageId: "provider-message",
+          role: "assistant",
+        },
+        {
+          type: EventType.TEXT_MESSAGE_CONTENT,
+          delta: "Fallback answer",
+          messageId: "provider-message",
+        },
+        {
+          type: EventType.TEXT_MESSAGE_END,
+          messageId: "provider-message",
+        },
+        {
+          type: EventType.RUN_FINISHED,
+          finishReason: "stop",
+          runId: "fallback-run",
+          threadId: "thread-1",
+        },
+      ]),
+    });
+
+    const lifecycle = (await collectChunks(stream)).flatMap((chunk) =>
+      chunk.type === EventType.RUN_STARTED ||
+      chunk.type === EventType.RUN_FINISHED
+        ? [`${chunk.type}:${chunk.runId}`]
+        : [],
+    );
+
+    expect(lifecycle).toEqual([
+      `${EventType.RUN_STARTED}:primary-run`,
+      `${EventType.RUN_FINISHED}:primary-run`,
+      `${EventType.RUN_STARTED}:fallback-run`,
+      `${EventType.RUN_FINISHED}:fallback-run`,
+    ]);
+    expect(persistedTexts).toEqual(["Fallback answer"]);
+  });
+
+  test("persists a client tool requested after a completed server-tool run", async () => {
+    const messageId = toSafeId<"chatMessage">(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    let responseMessage: ChatMessage | null = null;
+    const processor = new StreamProcessor({
+      events: {
+        onStreamEnd: (message) => {
+          responseMessage = toChatMessage(message);
+        },
+      },
+    });
+    let persistedToolNames: string[] = [];
+    const stream = processServerChatStream({
+      abortSignal: new AbortController().signal,
+      getResponseMessage: () => responseMessage,
+      mapMessageId: createChatMessageIdMapper(() => messageId),
+      onFinish: ({ responseMessage: finishedMessage }) => {
+        persistedToolNames = finishedMessage.parts.flatMap((part) =>
+          part.type === "tool-call" ? [part.name] : [],
+        );
+      },
+      processor,
+      source: streamChunks([
+        {
+          type: EventType.RUN_STARTED,
+          runId: "list-run",
+          threadId: "thread-1",
+        },
+        {
+          type: EventType.TOOL_CALL_START,
+          parentMessageId: "provider-list-message",
+          toolCallId: "list-call",
+          toolCallName: "list_templates",
+          // eslint-disable-next-line typescript/no-deprecated -- AG-UI still requires the compatibility field.
+          toolName: "list_templates",
+        },
+        {
+          type: EventType.TOOL_CALL_ARGS,
+          delta: "{}",
+          toolCallId: "list-call",
+        },
+        {
+          type: EventType.TOOL_CALL_END,
+          input: {},
+          toolCallId: "list-call",
+          toolCallName: "list_templates",
+          // eslint-disable-next-line typescript/no-deprecated -- AG-UI still requires the compatibility field.
+          toolName: "list_templates",
+        },
+        {
+          type: EventType.TOOL_CALL_RESULT,
+          content: '{"templates":[]}',
+          messageId: "provider-list-message",
+          toolCallId: "list-call",
+        },
+        {
+          type: EventType.RUN_FINISHED,
+          finishReason: "tool_calls",
+          runId: "list-run",
+          threadId: "thread-1",
+        },
+        {
+          type: EventType.RUN_STARTED,
+          runId: "ask-run",
+          threadId: "thread-1",
+        },
+        {
+          type: EventType.TOOL_CALL_START,
+          parentMessageId: "provider-ask-message",
+          toolCallId: "ask-call",
+          toolCallName: "ask-user",
+          // eslint-disable-next-line typescript/no-deprecated -- AG-UI still requires the compatibility field.
+          toolName: "ask-user",
+        },
+        {
+          type: EventType.TOOL_CALL_ARGS,
+          delta:
+            '{"question":"What scope should the power of attorney cover?"}',
+          toolCallId: "ask-call",
+        },
+        {
+          type: EventType.TOOL_CALL_END,
+          input: {
+            question: "What scope should the power of attorney cover?",
+          },
+          toolCallId: "ask-call",
+          toolCallName: "ask-user",
+          // eslint-disable-next-line typescript/no-deprecated -- AG-UI still requires the compatibility field.
+          toolName: "ask-user",
+        },
+        {
+          type: EventType.RUN_FINISHED,
+          finishReason: "tool_calls",
+          runId: "ask-run",
+          threadId: "thread-1",
+        },
+        {
+          type: EventType.CUSTOM,
+          name: "tool-input-available",
+          value: {
+            input: {
+              question: "What scope should the power of attorney cover?",
+            },
+            toolCallId: "ask-call",
+            toolName: "ask-user",
+          },
+        },
+      ]),
+    });
+
+    const chunks = await collectChunks(stream);
+    let clientToolNames: string[] = [];
+    const clientProcessor = new StreamProcessor({
+      events: {
+        onMessagesChange: (messages) => {
+          const assistant = messages.findLast(
+            (message) => message.role === "assistant",
+          );
+          clientToolNames =
+            assistant?.parts.flatMap((part) =>
+              part.type === "tool-call" ? [part.name] : [],
+            ) ?? [];
+        },
+      },
+    });
+    for (const chunk of chunks) {
+      clientProcessor.processChunk(chunk);
+    }
+
+    expect(persistedToolNames).toEqual(["list_templates", "ask-user"]);
+    expect(persistedToolNames).toEqual(clientToolNames);
+  });
+
+  test("persists approval requests emitted after a model run finishes", async () => {
+    const messageId = toSafeId<"chatMessage">(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    let responseMessage: ChatMessage | null = null;
+    const processor = new StreamProcessor({
+      events: {
+        onStreamEnd: (message) => {
+          const toolCall = message.parts.find(
+            (part): part is ToolCallPart =>
+              part.type === "tool-call" && part.id === "tool-1",
+          );
+          if (!toolCall) {
+            throw new Error("Expected web-search tool call");
+          }
+          responseMessage = {
+            id: message.id,
+            parts: [
+              {
+                arguments: toolCall.arguments,
+                id: toolCall.id,
+                name: "web_search",
+                state: toolCall.state,
+                type: "tool-call",
+                ...(toolCall.approval === undefined
+                  ? {}
+                  : { approval: toolCall.approval }),
+              },
+            ],
+            role: "assistant",
+          };
+        },
+      },
+    });
+    let persistedState: string | undefined;
+    const stream = processServerChatStream({
+      abortSignal: new AbortController().signal,
+      getResponseMessage: () => responseMessage,
+      mapMessageId: createChatMessageIdMapper(() => messageId),
+      onFinish: ({ responseMessage: finishedMessage }) => {
+        const part = finishedMessage.parts.at(0);
+        persistedState = part?.type === "tool-call" ? part.state : undefined;
+      },
+      processor,
+      source: streamChunks([
+        { type: EventType.RUN_STARTED, runId: "run-1", threadId: "thread-1" },
+        {
+          type: EventType.TOOL_CALL_START,
+          parentMessageId: "provider-message",
+          toolCallId: "tool-1",
+          toolCallName: "web_search",
+          // eslint-disable-next-line typescript/no-deprecated -- AG-UI still requires the compatibility field.
+          toolName: "web_search",
+        },
+        {
+          type: EventType.TOOL_CALL_ARGS,
+          delta: '{"query":"Winston Churchill quotes"}',
+          toolCallId: "tool-1",
+        },
+        {
+          type: EventType.TOOL_CALL_END,
+          input: { query: "Winston Churchill quotes" },
+          toolCallId: "tool-1",
+          toolCallName: "web_search",
+          // eslint-disable-next-line typescript/no-deprecated -- AG-UI still requires the compatibility field.
+          toolName: "web_search",
+        },
+        {
+          type: EventType.RUN_FINISHED,
+          finishReason: "tool_calls",
+          runId: "run-1",
+          threadId: "thread-1",
+        },
+        {
+          type: EventType.CUSTOM,
+          name: "approval-requested",
+          value: {
+            approval: { id: "approval_tool-1", needsApproval: true },
+            input: { query: "Winston Churchill quotes" },
+            toolCallId: "tool-1",
+            toolName: "web_search",
+          },
+        },
+      ]),
+    });
+
+    const chunks = await collectChunks(stream);
+    let clientState: string | undefined;
+    const clientProcessor = new StreamProcessor({
+      events: {
+        onStreamEnd: (message) => {
+          const part = message.parts.find(
+            (candidate) =>
+              candidate.type === "tool-call" && candidate.id === "tool-1",
+          );
+          clientState = part?.type === "tool-call" ? part.state : undefined;
+        },
+      },
+    });
+    for (const chunk of chunks) {
+      clientProcessor.processChunk(chunk);
+    }
+
+    expect(chunks.map((chunk) => chunk.type)).toEqual([
+      EventType.RUN_STARTED,
+      EventType.TEXT_MESSAGE_START,
+      EventType.TOOL_CALL_START,
+      EventType.TOOL_CALL_ARGS,
+      EventType.TOOL_CALL_END,
+      EventType.CUSTOM,
+      EventType.RUN_FINISHED,
+    ]);
+    expect(persistedState).toBe(clientState);
+    expect(persistedState).toBe("approval-requested");
+  });
+
   test("persists partial assistant messages when the stream aborts after content", async () => {
     const abortController = new AbortController();
     const messageId = toSafeId<"chatMessage">(
@@ -393,15 +870,15 @@ describe("outgoing chat stream message ids", () => {
         },
       },
     });
-    const finishEvents: { isAborted: boolean; text: string }[] = [];
+    const finishEvents: { outcome: string; text: string }[] = [];
 
     const stream = processServerChatStream({
       abortSignal: abortController.signal,
       getResponseMessage: () => responseMessage,
       mapMessageId: createChatMessageIdMapper(() => messageId),
-      onFinish: ({ isAborted, responseMessage: finishedMessage }) => {
+      onFinish: ({ outcome, responseMessage: finishedMessage }) => {
         finishEvents.push({
-          isAborted,
+          outcome: outcome.type,
           text: finishedMessage.parts
             .map((part) => (part.type === "text" ? part.content : ""))
             .join(""),
@@ -448,19 +925,22 @@ describe("outgoing chat stream message ids", () => {
         code: "unknown",
       },
     ]);
-    expect(finishEvents).toEqual([{ isAborted: true, text: "Partial answer" }]);
+    expect(finishEvents).toEqual([
+      { outcome: "interrupted", text: "Partial answer" },
+    ]);
   });
 
   test("normalizes in-band provider run errors", async () => {
     const messageId = toSafeId<"chatMessage">(
       "11111111-1111-4111-8111-111111111111",
     );
+    const outcomes: string[] = [];
     const stream = processServerChatStream({
       abortSignal: new AbortController().signal,
       getResponseMessage: () => null,
       mapMessageId: createChatMessageIdMapper(() => messageId),
-      onFinish: () => {
-        throw new Error("Expected run error not to finish");
+      onFinish: ({ outcome }) => {
+        outcomes.push(outcome.type);
       },
       processor: new StreamProcessor(),
       source: streamChunks([
@@ -482,19 +962,119 @@ describe("outgoing chat stream message ids", () => {
         rawEvent: { statusCode: 429 },
       },
     ]);
+    expect(outcomes).toEqual(["failed"]);
+  });
+
+  test("classifies a run error whose body arrives in the message", async () => {
+    const messageId = toSafeId<"chatMessage">(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    const outcomes: string[] = [];
+    const stream = processServerChatStream({
+      abortSignal: new AbortController().signal,
+      getResponseMessage: () => null,
+      mapMessageId: createChatMessageIdMapper(() => messageId),
+      onFinish: ({ outcome }) => {
+        outcomes.push(outcome.type);
+      },
+      processor: new StreamProcessor(),
+      source: streamChunks([
+        { type: EventType.RUN_STARTED, runId: "run-1", threadId: "thread-1" },
+        {
+          type: EventType.RUN_ERROR,
+          message: JSON.stringify({
+            error: {
+              code: 503,
+              message: "The model is currently overloaded.",
+              status: "UNAVAILABLE",
+            },
+          }),
+        },
+      ]),
+    });
+
+    expect(stripTimestamps(await collectChunks(stream))).toEqual([
+      { type: EventType.RUN_STARTED, runId: "run-1", threadId: "thread-1" },
+      {
+        type: EventType.RUN_ERROR,
+        message: "provider_unavailable",
+        code: "provider_unavailable",
+      },
+    ]);
+    expect(outcomes).toEqual(["failed"]);
+  });
+
+  test("classifies a run error body behind leading whitespace", async () => {
+    const messageId = toSafeId<"chatMessage">(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    const outcomes: string[] = [];
+    const stream = processServerChatStream({
+      abortSignal: new AbortController().signal,
+      getResponseMessage: () => null,
+      mapMessageId: createChatMessageIdMapper(() => messageId),
+      onFinish: ({ outcome }) => {
+        outcomes.push(outcome.type);
+      },
+      processor: new StreamProcessor(),
+      source: streamChunks([
+        { type: EventType.RUN_STARTED, runId: "run-1", threadId: "thread-1" },
+        {
+          type: EventType.RUN_ERROR,
+          message: `\n  ${JSON.stringify({ error: { code: 429 } })}`,
+        },
+      ]),
+    });
+
+    expect(stripTimestamps(await collectChunks(stream)).at(-1)).toEqual({
+      type: EventType.RUN_ERROR,
+      message: "quota_exhausted",
+      code: "quota_exhausted",
+    });
+    expect(outcomes).toEqual(["failed"]);
+  });
+
+  test("leaves a plain-text run error unclassified", async () => {
+    const messageId = toSafeId<"chatMessage">(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    const outcomes: string[] = [];
+    const stream = processServerChatStream({
+      abortSignal: new AbortController().signal,
+      getResponseMessage: () => null,
+      mapMessageId: createChatMessageIdMapper(() => messageId),
+      onFinish: ({ outcome }) => {
+        outcomes.push(outcome.type);
+      },
+      processor: new StreamProcessor(),
+      source: streamChunks([
+        { type: EventType.RUN_STARTED, runId: "run-1", threadId: "thread-1" },
+        { type: EventType.RUN_ERROR, message: "something went wrong" },
+      ]),
+    });
+
+    expect(stripTimestamps(await collectChunks(stream))).toEqual([
+      { type: EventType.RUN_STARTED, runId: "run-1", threadId: "thread-1" },
+      {
+        type: EventType.RUN_ERROR,
+        message: "unknown",
+        code: "unknown",
+      },
+    ]);
+    expect(outcomes).toEqual(["failed"]);
   });
 
   test("does not finish successfully after an in-band run error", async () => {
     const messageId = toSafeId<"chatMessage">(
       "11111111-1111-4111-8111-111111111111",
     );
-    let finished = false;
+    const outcomes: string[] = [];
     const stream = processServerChatStream({
       abortSignal: new AbortController().signal,
       getResponseMessage: () => null,
       mapMessageId: createChatMessageIdMapper(() => messageId),
-      onFinish: () => {
-        finished = true;
+      onFinish: ({ outcome }) => {
+        outcomes.push(outcome.type);
       },
       processor: new StreamProcessor(),
       source: streamChunks([
@@ -529,7 +1109,7 @@ describe("outgoing chat stream message ids", () => {
       code: "provider_billing",
       rawEvent: { statusCode: 402 },
     });
-    expect(finished).toBe(false);
+    expect(outcomes).toEqual(["failed"]);
   });
 });
 
@@ -576,14 +1156,17 @@ describe("chat stream client-disconnect persistence", () => {
   test("persists the accumulated assistant message when the client disconnects mid-stream", async () => {
     const abortSignal = new AbortController().signal;
     const { getResponseMessage, processor } = accumulatingProcessor();
-    const finishEvents: { isAborted: boolean; text: string }[] = [];
+    const finishEvents: { outcome: string; text: string }[] = [];
 
     const stream = processServerChatStream({
       abortSignal,
       getResponseMessage,
       mapMessageId: createChatMessageIdMapper(() => messageId),
-      onFinish: ({ isAborted, responseMessage }) => {
-        finishEvents.push({ isAborted, text: textOf(responseMessage) });
+      onFinish: ({ outcome, responseMessage }) => {
+        finishEvents.push({
+          outcome: outcome.type,
+          text: textOf(responseMessage),
+        });
       },
       processor,
       source: streamChunks([
@@ -616,7 +1199,7 @@ describe("chat stream client-disconnect persistence", () => {
     }
 
     expect(finishEvents).toEqual([
-      { isAborted: false, text: "Partial answer" },
+      { outcome: "interrupted", text: "Partial answer" },
     ]);
     expect(abortSignal.aborted).toBe(false);
   });
@@ -662,16 +1245,16 @@ describe("chat stream client-disconnect persistence", () => {
     expect(finishCount).toBe(1);
   });
 
-  test("does not persist when the client disconnects before any content accumulates", async () => {
+  test("settles an interrupted turn when the client disconnects before content", async () => {
     const { getResponseMessage, processor } = accumulatingProcessor();
-    let finishCount = 0;
+    const outcomes: string[] = [];
 
     const stream = processServerChatStream({
       abortSignal: new AbortController().signal,
       getResponseMessage,
       mapMessageId: createChatMessageIdMapper(() => messageId),
-      onFinish: () => {
-        finishCount += 1;
+      onFinish: ({ outcome }) => {
+        outcomes.push(outcome.type);
       },
       processor,
       source: streamChunks([
@@ -690,7 +1273,7 @@ describe("chat stream client-disconnect persistence", () => {
     await iterator.next();
     await iterator.return?.();
 
-    expect(finishCount).toBe(0);
+    expect(outcomes).toEqual(["interrupted"]);
   });
 });
 
@@ -709,6 +1292,114 @@ describe("chat message usage metadata", () => {
       promptTokens: 10,
       totalTokens: 32,
     });
+  });
+});
+
+describe("streamed chat message conversion", () => {
+  for (const richPart of richChatParts) {
+    test(`persists a streamed ${richPart.type} part with its surrounding text`, () => {
+      const message = toChatMessage({
+        id: "assistant-message",
+        role: "assistant",
+        parts: [
+          { content: "Dobrý den", type: "text" },
+          richPart,
+          { content: "Na shledanou", type: "text" },
+        ],
+      });
+
+      expect(message?.parts).toEqual([
+        { content: "Dobrý den", type: "text" },
+        richPart,
+        { content: "Na shledanou", type: "text" },
+      ]);
+    });
+  }
+
+  test("settles a part-less completion as a failed turn", async () => {
+    const messageId = toSafeId<"chatMessage">(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    const outcomes: string[] = [];
+    // A provider can finish without emitting content. Finishing that turn
+    // would insert a blank assistant message into the history.
+    const responseMessage: ChatMessage = {
+      id: messageId,
+      parts: [],
+      role: "assistant",
+    };
+    const processor = new StreamProcessor({ events: {} });
+
+    await collectChunks(
+      processServerChatStream({
+        abortSignal: new AbortController().signal,
+        getResponseMessage: () => responseMessage,
+        mapMessageId: createChatMessageIdMapper(() => messageId),
+        onFinish: ({ outcome }) => {
+          outcomes.push(outcome.type);
+        },
+        processor,
+        source: streamChunks([
+          { type: EventType.RUN_STARTED, runId: "run-1", threadId: "thread-1" },
+          {
+            type: EventType.RUN_FINISHED,
+            finishReason: "stop",
+            runId: "run-1",
+            threadId: "thread-1",
+          },
+        ]),
+      }),
+    );
+
+    expect(outcomes).toEqual(["failed"]);
+  });
+
+  // The teardown `finally` reaches the same settlement boundary by a different
+  // route, so a dropped connection still closes the durable turn.
+  test("settles a part-less turn when the client disconnects", async () => {
+    const messageId = toSafeId<"chatMessage">(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    const outcomes: string[] = [];
+    const responseMessage: ChatMessage = {
+      id: messageId,
+      parts: [],
+      role: "assistant",
+    };
+    const processor = new StreamProcessor({ events: {} });
+
+    const stream = processServerChatStream({
+      abortSignal: new AbortController().signal,
+      getResponseMessage: () => responseMessage,
+      mapMessageId: createChatMessageIdMapper(() => messageId),
+      onFinish: ({ outcome }) => {
+        outcomes.push(outcome.type);
+      },
+      processor,
+      source: streamChunks([
+        { type: EventType.RUN_STARTED, runId: "run-1", threadId: "thread-1" },
+        {
+          type: EventType.TEXT_MESSAGE_START,
+          messageId: "provider-message",
+          role: "assistant",
+        },
+        {
+          type: EventType.TEXT_MESSAGE_CONTENT,
+          delta: "Dobrý den",
+          messageId: "provider-message",
+        },
+      ]),
+    });
+
+    // Breaking the `for await` `.return()`s the generator, running the teardown
+    // `finally` that calls `finalizeInterruptedResponseMessage`.
+    for await (const chunk of stream) {
+      if (chunk.type === EventType.TEXT_MESSAGE_CONTENT) {
+        break;
+      }
+    }
+
+    expect(outcomes).toEqual(["interrupted"]);
   });
 });
 

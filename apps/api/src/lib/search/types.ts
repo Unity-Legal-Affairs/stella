@@ -137,11 +137,16 @@ export type ContentSearchResult = {
   totalCount: number;
 };
 
+export type RemoveEntityOptions = {
+  entityId: SafeId<"entity">;
+  workspaceId: SafeId<"workspace">;
+};
+
 export type SearchProvider = {
   search: (query: SearchQuery) => Promise<SearchResult>;
   searchContent: (query: ContentSearchQuery) => Promise<ContentSearchResult>;
   indexEntity: (entityId: SafeId<"entity">) => Promise<void>;
-  removeEntity: (entityId: SafeId<"entity">) => Promise<void>;
+  removeEntity: (options: RemoveEntityOptions) => Promise<void>;
   rebuildIndex: (orgId: SafeId<"organization">) => Promise<void>;
 };
 
@@ -184,6 +189,8 @@ export type EntityGlobalSearchHit = GlobalSearchHitBase & {
   workspaceName: string;
   lastEditedByName: string | null;
   lastEditedByImage: string | null;
+  fileFieldId: string | null;
+  filePropertyId: string | null;
   mimeType: string | null;
 };
 

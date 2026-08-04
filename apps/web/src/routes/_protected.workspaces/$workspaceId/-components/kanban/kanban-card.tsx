@@ -14,6 +14,25 @@ import {
 import { containedHandler } from "@stll/ui/hooks/use-contained-handler";
 import { cn } from "@stll/ui/lib/utils";
 
+import { InlineEdit } from "@/components/inline-edit";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
+import { EditableField } from "@/components/workspaces/editable-field";
+import { EntityKindIcon } from "@/components/workspaces/entity-kind-icon";
+import {
+  formatRelativeTime,
+  getEntityName,
+  getFirstFile,
+  getInternalPropertyId,
+} from "@/components/workspaces/entity-utils";
+import { TaskBadges } from "@/components/workspaces/tasks/task-badges";
+import {
+  isTaskPriority,
+  isTaskStatus,
+  PRIORITY_COLORS,
+  PRIORITY_ICONS,
+  STATUS_COLORS,
+  STATUS_ICONS,
+} from "@/components/workspaces/tasks/task-detail-constants";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { useInlineRename } from "@/hooks/use-inline-rename";
 import { useFormatter } from "@/i18n/formatting-context";
@@ -26,34 +45,15 @@ import type {
   WorkspaceFieldContent,
   WorkspaceProperty,
 } from "@/lib/types";
+import { ENTITY_DRAG_TYPE } from "@/lib/workspaces/drag-constants";
 import { ActiveEditBadge } from "@/routes/_protected.workspaces/$workspaceId/-components/active-edit-badge";
 import { useCellMetadataFlags } from "@/routes/_protected.workspaces/$workspaceId/-components/cell-metadata-flags";
-import { ENTITY_DRAG_TYPE } from "@/routes/_protected.workspaces/$workspaceId/-components/drag-constants";
-import { EditableField } from "@/routes/_protected.workspaces/$workspaceId/-components/editable-field";
-import { EntityKindIcon } from "@/routes/_protected.workspaces/$workspaceId/-components/entity-kind-icon";
-import { InlineEdit } from "@/routes/_protected.workspaces/$workspaceId/-components/inline-edit";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
 import {
   getKanbanCardMetadataVisibility,
   getKanbanCardRenameInitialValue,
 } from "@/routes/_protected.workspaces/$workspaceId/-components/kanban/kanban-card.logic";
 import { RowActions } from "@/routes/_protected.workspaces/$workspaceId/-components/row-actions";
-import { TaskBadges } from "@/routes/_protected.workspaces/$workspaceId/-components/tasks/task-badges";
-import {
-  isTaskPriority,
-  isTaskStatus,
-  PRIORITY_COLORS,
-  PRIORITY_ICONS,
-  STATUS_COLORS,
-  STATUS_ICONS,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/tasks/task-detail-constants";
 import { useInspectorFlash } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-inspector-flash";
-import {
-  formatRelativeTime,
-  getEntityName,
-  getFirstFile,
-  getInternalPropertyId,
-} from "@/routes/_protected.workspaces/$workspaceId/-utils";
 
 type KanbanCardProps = {
   entity: WorkspaceEntity;
@@ -73,7 +73,7 @@ export const KanbanCard = ({
   const name = getEntityName(entity);
   const file = getFirstFile(entity);
   const navigable = file !== null && isFileDisplayable(file);
-  const isActivePeek = useInspectorStore((s) => {
+  const isActivePeek = useInspectorTabsStore((s) => {
     if (!s.activeId) {
       return false;
     }
@@ -270,7 +270,7 @@ export const KanbanCard = ({
     </div>
   ) : null;
 
-  const isActiveTask = useInspectorStore((s) => {
+  const isActiveTask = useInspectorTabsStore((s) => {
     if (!s.activeId) {
       return false;
     }
@@ -293,7 +293,7 @@ export const KanbanCard = ({
           )}
           // eslint-disable-next-line react/react-compiler -- containedHandler house pattern; cardRef is handed to the helper, not read for rendered output
           onClick={containedHandler(cardRef, () =>
-            useInspectorStore.getState().openTask({
+            useInspectorTabsStore.getState().openTask({
               taskId: entity.entityId,
               workspaceId,
               label: name,
@@ -301,7 +301,7 @@ export const KanbanCard = ({
           )}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
-              useInspectorStore.getState().openTask({
+              useInspectorTabsStore.getState().openTask({
                 taskId: entity.entityId,
                 workspaceId,
                 label: name,
@@ -329,7 +329,7 @@ export const KanbanCard = ({
           )}
           // eslint-disable-next-line react/react-compiler -- containedHandler house pattern; cardRef is handed to the helper, not read for rendered output
           onClick={containedHandler(cardRef, () =>
-            useInspectorStore.getState().openFile({
+            useInspectorTabsStore.getState().openFile({
               id: file.fieldId,
               entityId: file.entityId,
               label: name,
@@ -342,7 +342,7 @@ export const KanbanCard = ({
           )}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
-              useInspectorStore.getState().openFile({
+              useInspectorTabsStore.getState().openFile({
                 id: file.fieldId,
                 entityId: file.entityId,
                 label: name,

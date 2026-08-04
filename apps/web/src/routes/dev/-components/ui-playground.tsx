@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type * as React from "react";
 
 import {
@@ -17,6 +17,7 @@ import {
   Trash2Icon,
   UserIcon,
 } from "lucide-react";
+import { useTranslations } from "use-intl";
 
 import {
   Accordion,
@@ -145,6 +146,7 @@ import {
   PreviewCardTrigger,
 } from "@stll/ui/components/preview-card";
 import { ScrollArea } from "@stll/ui/components/scroll-area";
+import { ScrollToTop } from "@stll/ui/components/scroll-to-top";
 import {
   Select,
   SelectItem,
@@ -184,6 +186,7 @@ import {
   TooltipTrigger,
 } from "@stll/ui/components/tooltip";
 
+import { ChatActivityOrb } from "@/components/chat/chat-activity-orb";
 import { ChatApprovalContext } from "@/components/chat/chat-approval-context";
 import { ChatMattersContext } from "@/components/chat/chat-matters-context";
 import { ChatThreadMessages } from "@/components/chat/chat-thread-messages";
@@ -1185,11 +1188,37 @@ export function UiPlayground() {
               >
                 <SharedChatRendererSample />
               </PlaygroundSection>
+              <PlaygroundSection
+                description="Floating affordance that fades in once the container is scrolled past its threshold and jumps back to the top."
+                title="Scroll to top"
+              >
+                <ScrollToTopPlayground />
+              </PlaygroundSection>
             </PlaygroundGrid>
           </TabsPanel>
         </Tabs>
       </div>
     </main>
+  );
+}
+
+function ScrollToTopPlayground() {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  return (
+    <div className="relative h-64 overflow-hidden rounded-lg border">
+      <div ref={scrollContainerRef} className="h-full overflow-y-auto p-4">
+        <div className="text-muted-foreground flex flex-col gap-4 text-sm">
+          {Array.from({ length: 20 }, (_, index) => (
+            <p key={index}>
+              Scroll row {index + 1} — keep scrolling to reveal the
+              scroll-to-top button.
+            </p>
+          ))}
+        </div>
+      </div>
+      <ScrollToTop scrollContainerRef={scrollContainerRef} threshold={120} />
+    </div>
   );
 }
 
@@ -1397,8 +1426,28 @@ const RUNNING_TOOL_STEP = {
 } satisfies ChatToolCallPart;
 
 function ToolActivityPlayground() {
+  const t = useTranslations();
+
   return (
     <div className="flex flex-col">
+      <div className="bg-muted/25 mb-3 flex flex-wrap gap-x-5 gap-y-2 rounded-lg px-3 py-2.5">
+        <div className="text-muted-foreground flex items-center gap-2 text-xs">
+          <ChatActivityOrb state="working" />
+          <span>{t("chat.thinking")}</span>
+        </div>
+        <div className="text-muted-foreground flex items-center gap-2 text-xs">
+          <ChatActivityOrb state="searching" />
+          <span>{t("chat.tool.infosoud_lookup_case")}</span>
+        </div>
+        <div className="text-muted-foreground flex items-center gap-2 text-xs">
+          <ChatActivityOrb state="solving" />
+          <span>{t("chat.analyzingSources")}</span>
+        </div>
+        <div className="text-muted-foreground flex items-center gap-2 text-xs">
+          <ChatActivityOrb state="shaping" />
+          <span>{t("chat.tool.edit_workspace_document")}</span>
+        </div>
+      </div>
       <ToolCallCard
         activeOrganizationId="playground"
         durationMs={8000}

@@ -21,7 +21,10 @@ import type { SynthesizedCapabilityContext } from "@/api/mcp/capability-context"
 import { isCapabilityFeatureEnabled } from "@/api/mcp/capability-feature";
 import { consumeInvokeCapabilityRateLimit } from "@/api/mcp/capability-rate-limit";
 import { CONTEXT_FIDELITY_WAIVERS } from "@/api/mcp/capability-waivers";
-import type { McpRequestContext } from "@/api/mcp/context";
+import {
+  bindApprovedMcpAuditContext,
+  type McpRequestContext,
+} from "@/api/mcp/context";
 import type { McpErrorCode, McpValidationIssue } from "@/api/mcp/error-codes";
 import capabilityCatalogRaw from "@/api/mcp/generated/capability-catalog.json";
 import { CAPABILITY_DISPATCH } from "@/api/mcp/generated/capability-dispatch";
@@ -42,6 +45,7 @@ import {
   MAX_LIST_LIMIT,
   MCP_INTERNAL_ERROR_HINT,
   notFoundResult,
+  oauthScopeRecoveryHint,
   parseOptionalCursor,
   parseOptionalEnum,
   parseOptionalLimit,
@@ -81,6 +85,7 @@ type CatalogEntry = {
   access: "read" | "write";
   destructive: boolean;
   scope: string;
+  additionalScopes?: readonly string[];
   /**
    * When true, this capability's REST route resolves workspace access through
    * `validateWorkspaceAccessIncludingArchived` (e.g. `workspaces.unarchive`), so
@@ -152,6 +157,11 @@ const isCatalogEntry = (value: unknown): value is CatalogEntry =>
   (value["access"] === "read" || value["access"] === "write") &&
   typeof value["destructive"] === "boolean" &&
   typeof value["scope"] === "string" &&
+  (value["additionalScopes"] === undefined ||
+    (Array.isArray(value["additionalScopes"]) &&
+      value["additionalScopes"].every(
+        (scope): scope is string => typeof scope === "string",
+      ))) &&
   (value["feature"] === undefined || typeof value["feature"] === "string") &&
   isMcpDisposition(value["mcp"]);
 
@@ -182,6 +192,16 @@ const DISPATCH_BY_ID = new Map<string, CapabilityDispatchEntry>(
 
 const capabilityDomain = (id: string): string => id.split(".").at(0) ?? id;
 const capabilityLeaf = (id: string): string => id.split(".").at(-1) ?? id;
+const additionalScopesOf = (entry: CatalogEntry): readonly string[] => {
+  if (entry.additionalScopes === undefined) {
+    return [];
+  }
+  return entry.additionalScopes;
+};
+const requiredScopesOf = (entry: CatalogEntry): readonly string[] => [
+  entry.scope,
+  ...additionalScopesOf(entry),
+];
 
 // --- Live handler resolution -------------------------------------------------
 
@@ -523,13 +543,12 @@ const successEgress = (
 
 const CAPABILITY_LIST_CURSOR = "cursor";
 
-// eslint-disable-next-line require-await -- the McpToolHandler contract is Promise-returning, but listing the static catalog does no async work
-const listCapabilitiesHandler = async ({
+const listCapabilitiesHandler = ({
   args,
 }: {
   args: Record<string, unknown>;
   context: McpRequestContext;
-}): Promise<McpToolResponse> => {
+}): McpToolResponse => {
   const domain = args["domain"];
   if (domain !== undefined && typeof domain !== "string") {
     return structuredErrorResult({
@@ -597,6 +616,7 @@ const listCapabilitiesHandler = async ({
         summary: summarizeEntry(entry),
         description: entry.description ?? null,
         scope: entry.scope,
+        additionalScopes: additionalScopesOf(entry),
       })),
       nextCursor,
       limit,
@@ -729,6 +749,7 @@ const describeCapabilityHandler = async ({
       destructive: entry.destructive,
       handlerKind: entry.handlerKind,
       scope: entry.scope,
+      additionalScopes: additionalScopesOf(entry),
       // Surfacing these lets an agent learn, before invoking, that the
       // capability returns a file (invoke refuses it), takes a file upload
       // (invoke refuses it; use the presigned flow), or tolerates an archived
@@ -950,14 +971,22 @@ const invokeCapabilityHandler = async ({
     });
   }
 
-  // 4. Scope: the session must hold the capability's catalog scope. Read
+  // 4. Scopes: the session must hold every scope in the capability catalog. Read
   // capabilities now resolve to a read scope (see the exporter's access-keyed
   // resolution), so a `stella:read` grant reaches them directly.
-  if (!context.grantedScopes.includes(entry.scope)) {
+  const requiredScopes = requiredScopesOf(entry);
+  const missingScope = requiredScopes.find(
+    (scope) => !context.grantedScopes.includes(scope),
+  );
+  if (missingScope !== undefined) {
     return structuredErrorResult({
       code: "missing_scope",
-      message: `Insufficient permissions. Capability "${id}" requires scope: ${entry.scope}`,
-      hint: `Grant the '${entry.scope}' scope by re-running OAuth consent (CLI: 'stella auth login --scopes ${entry.scope}'), then retry.`,
+      message: `Insufficient permissions. Capability "${id}" requires scope: ${missingScope}`,
+      hint: oauthScopeRecoveryHint({
+        grantedScopes: context.grantedScopes,
+        missingScope,
+        requiredScopes,
+      }),
     });
   }
 
@@ -977,7 +1006,9 @@ const invokeCapabilityHandler = async ({
 
   try {
     return await executeInvoke({
-      context,
+      context: entry.destructive
+        ? bindApprovedMcpAuditContext(context)
+        : context,
       entry,
       id,
       input,
@@ -1144,19 +1175,20 @@ const executeInvoke = async ({
     });
   }
 
-  // 8. Gateway rate limit, per (organization, capability). Mirrors the explicit
-  // per-route limits some REST routes carry (e.g. entities.translate); capped
-  // before execution so a runaway agent cannot drive backend cost through the
-  // generic path. validateOnly (above) is exempt: it never executes.
+  // 8. Gateway rate limit. Most capabilities are scoped per organization and
+  // capability; skill-source calls share the REST client-IP budget. Capping
+  // before execution prevents a runaway agent from driving backend cost through
+  // the generic path. validateOnly (above) is exempt: it never executes.
   const rate = await consumeInvokeCapabilityRateLimit({
     capabilityId: id,
+    clientIp: context.clientIp ?? null,
     organizationId: context.organizationId,
   });
   if (!rate.ok) {
     return structuredErrorResult({
       code: "rate_limited",
       message: `Rate limit exceeded for capability "${id}"`,
-      hint: `Too many invocations of this capability for your organization; retry in about ${rate.retryAfterSeconds} seconds.`,
+      hint: `Too many invocations of this capability; retry in about ${rate.retryAfterSeconds} seconds.`,
     });
   }
 
@@ -1228,7 +1260,7 @@ export const mapHandlerResult = ({
 
 const CAPABILITY_TOOL_DEFINITIONS = [
   {
-    annotations: { openWorldHint: false },
+    annotations: { title: "List capabilities", openWorldHint: false },
     name: "list_capabilities",
     access: "read",
     anonymized: { exposure: "excluded", reason: "dynamic_tenant_payload" },
@@ -1238,7 +1270,7 @@ const CAPABILITY_TOOL_DEFINITIONS = [
       "backend operation (CRUD, exports, processing triggers) reachable through " +
       "invoke_capability. Paginated; filter by domain (the id prefix, e.g. " +
       '"time-entries") or access (read/write). Each item gives the capability ' +
-      "id, a one-line summary, and the OAuth scope it needs. Use " +
+      "id, a one-line summary, and every OAuth scope it needs. Use " +
       "describe_capability for the full input schema.",
     inputSchema: {
       type: "object",
@@ -1259,14 +1291,14 @@ const CAPABILITY_TOOL_DEFINITIONS = [
     },
   },
   {
-    annotations: { openWorldHint: false },
+    annotations: { title: "Describe capability", openWorldHint: false },
     name: "describe_capability",
     access: "read",
     anonymized: { exposure: "excluded", reason: "dynamic_tenant_payload" },
     scope: "stella:read",
     description:
       "Describe one capability in full: its live input JSON Schema " +
-      "(body/params/query), required OAuth scope, member permissions, whether it " +
+      "(body/params/query), required OAuth scopes, member permissions, whether it " +
       "is destructive, its handler kind (workspace/root), and its disposition. " +
       "Call this before invoke_capability to learn exactly what input to pass.",
     inputSchema: {
@@ -1288,7 +1320,11 @@ const CAPABILITY_TOOL_DEFINITIONS = [
     // lookup and template-tools.ts's fill_template declare open-world for;
     // the hint is static per tool, so it must cover that reachable case even
     // though most capabilities never leave the closed Stella domain.
-    annotations: { idempotentHint: false, openWorldHint: true },
+    annotations: {
+      title: "Invoke capability",
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     name: "invoke_capability",
     access: "write",
     anonymized: { exposure: "excluded", reason: "write" },

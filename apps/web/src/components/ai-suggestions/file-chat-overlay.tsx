@@ -13,7 +13,14 @@
  * extracts and renders accept/reject cards). That work is Phase E.
  */
 
-import { Suspense, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { RefObject } from "react";
 
 import {
@@ -21,8 +28,7 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query";
-import { getRouteApi } from "@tanstack/react-router";
-import { Result } from "better-result";
+import { panic, Result } from "better-result";
 import { LoaderCircleIcon } from "lucide-react";
 import { useTranslations } from "use-intl";
 import { v7 as uuidv7 } from "uuid";
@@ -41,6 +47,7 @@ import { BidiText } from "@stll/ui/components/bidi-text";
 import { stellaToast } from "@stll/ui/components/toast";
 
 import { resolveDocxSuggestionRequest } from "@/components/ai-suggestions/docx-suggestion-persistence";
+import { resolveFileReviewSessionId } from "@/components/ai-suggestions/file-review-session";
 import {
   ChatThreadCard,
   FLOATING_THREAD_CARD_OFFSET_WITH_REVIEW_CLASS,
@@ -78,17 +85,27 @@ import {
 import type {
   ApprovalToolName,
   ApprovalToolPart,
+  PersistedChatMessage,
   UnresolvedActiveDocxEditToolCallPart,
   UnresolvedFolioAgentDocToolCallPart,
 } from "@/components/chat/chat-ui-tools";
+import {
+  getCreateDocumentDraftPersistence,
+  type CreateDocumentDraftPersistence,
+} from "@/components/chat/create-document-draft-runtime";
 import { useChatModelSelection } from "@/components/chat/use-chat-model-selection";
 import type { DocxComments } from "@/components/docx/app-docx-editor";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import { useAIKeyGate } from "@/components/require-ai-key";
 import { SuggestedFollowupChips } from "@/features/chat/components/suggested-followup-chips";
 import { useChatSession } from "@/features/chat/hooks/use-chat-session";
 import { useChatThreadRuntime } from "@/features/chat/hooks/use-chat-thread-runtime";
 import { useChatUserContext } from "@/features/chat/hooks/use-chat-user-context";
 import { buildChatRequestMessage } from "@/features/chat/lib/build-chat-request-message";
+import {
+  resolveSuggestedPromptsAvailability,
+  resolveSuggestedPromptsTurnOwner,
+} from "@/features/chat/lib/suggested-prompts-availability";
 import type {
   ApplyActiveDocxEditsInput,
   ApplyActiveDocxEditsOutput,
@@ -105,6 +122,7 @@ import { getTranslator } from "@/i18n/i18n-store";
 import { getAnalytics } from "@/lib/analytics/provider";
 import { ChatAnonymizationLayer } from "@/lib/anonymize/use-chat-anonymization-layer";
 import { api } from "@/lib/api";
+import { useAuthenticatedUser } from "@/lib/authenticated-user-context";
 import {
   getChatSendMode,
   useChatAnonymized,
@@ -119,13 +137,16 @@ import {
   getChatEditModeSelection,
   useChatEditModeStore,
 } from "@/lib/chat-edit-mode-store";
-import type { ChatThreadId, ChatThreadRef } from "@/lib/chat-thread-ref";
+import {
+  getChatThreadKey,
+  type ChatThreadId,
+  type ChatThreadRef,
+} from "@/lib/chat-thread-ref";
 import { detached } from "@/lib/detached";
 import { toAPIError } from "@/lib/errors/api";
 import { useModelSelectorStore } from "@/lib/model-selector-store";
 import { matchReservedChatCommand } from "@/lib/reserved-chat-commands";
 import { toSafeId } from "@/lib/safe-id";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
 
 type ActiveFile = {
   docxEditSnapshot?:
@@ -625,7 +646,7 @@ const queueReviewSuggestions = ({
   // immediately sees where the proposals landed. Locating the tab
   // by entityId rather than by tab id keeps the chat overlay
   // ignorant of inspector internals.
-  const inspectorState = useInspectorStore.getState();
+  const inspectorState = useInspectorTabsStore.getState();
   const tab = inspectorState.tabs.find(
     (candidate) => candidate.type === "pdf" && candidate.entityId === entityId,
   );
@@ -837,6 +858,16 @@ type FileChatOverlayProps = {
    * fine but loses the file-context hint.
    */
   activeFile?: ActiveFile | undefined;
+  activeDraft?:
+    | {
+        fileName: string;
+        originChatMessageId: string;
+        originChatThreadId: ChatThreadId;
+        toolCallId: string;
+      }
+    | undefined;
+  /** The persistence lifecycle owns this draft chat while it is being saved. */
+  draftPersistence: CreateDocumentDraftPersistence;
   activeExternal?: ActiveExternal | undefined;
   docxEditorRef?: RefObject<DocxEditorRef | null> | undefined;
   docxEditable?: boolean | undefined;
@@ -863,9 +894,27 @@ type FileChatOverlayProps = {
    * for a fresh value.
    */
   onNewThread: () => void;
+  /** Called only after the server-persisted chat history proves this overlay
+   * thread owns the active generated-document draft. */
+  onActiveDraftChatBound?: ((threadId: ChatThreadId) => void) | undefined;
 };
 
-const protectedRouteApi = getRouteApi("/_protected");
+const hasPersistedActiveDraftChatBinding = ({
+  activeDraft,
+  messages,
+}: {
+  activeDraft: NonNullable<FileChatOverlayProps["activeDraft"]>;
+  messages: readonly PersistedChatMessage[];
+}): boolean =>
+  messages.some((message) => {
+    const context = message.metadata?.activeDraftContext;
+    return (
+      context?.type === "generated-document" &&
+      context.originChatMessageId === activeDraft.originChatMessageId &&
+      context.originChatThreadId === activeDraft.originChatThreadId &&
+      context.toolCallId === activeDraft.toolCallId
+    );
+  });
 
 const fallback = (
   <div
@@ -880,6 +929,8 @@ export const FileChatOverlay = ({
   workspaceId,
   chatThreadId,
   activeFile,
+  activeDraft,
+  draftPersistence,
   activeExternal,
   docxEditable,
   docxEditSafety,
@@ -887,6 +938,7 @@ export const FileChatOverlay = ({
   docxComments,
   onDocxCommentsChange,
   onNewThread,
+  onActiveDraftChatBound,
   requestDocxEditMode,
 }: FileChatOverlayProps) => {
   if (chatThreadId === undefined) {
@@ -903,6 +955,7 @@ export const FileChatOverlay = ({
       <Suspense fallback={fallback}>
         <ResolvedFileChatOverlay
           activeFile={{ ...activeFile, fileFieldId }}
+          draftPersistence={draftPersistence}
           docxComments={docxComments}
           docxEditable={docxEditable}
           docxEditSafety={docxEditSafety}
@@ -920,6 +973,8 @@ export const FileChatOverlay = ({
     <Suspense fallback={fallback}>
       <FileChatOverlayInner
         activeExternal={activeExternal}
+        activeDraft={activeDraft}
+        draftPersistence={draftPersistence}
         activeFile={activeFile}
         chatThreadId={chatThreadId}
         docxComments={docxComments}
@@ -927,6 +982,7 @@ export const FileChatOverlay = ({
         docxEditSafety={docxEditSafety}
         docxEditorRef={docxEditorRef}
         onDocxCommentsChange={onDocxCommentsChange}
+        onActiveDraftChatBound={onActiveDraftChatBound}
         onNewThread={onNewThread}
         requestDocxEditMode={requestDocxEditMode}
         workspaceId={workspaceId}
@@ -949,14 +1005,13 @@ const ResolvedFileChatOverlay = ({
   docxEditable,
   docxEditSafety,
   docxEditorRef,
+  draftPersistence,
   onDocxCommentsChange,
   onNewThread,
   requestDocxEditMode,
   workspaceId,
 }: ResolvedFileChatOverlayProps) => {
-  const activeOrganizationId = protectedRouteApi.useRouteContext({
-    select: (ctx) => ctx.user.activeOrganizationId,
-  });
+  const activeOrganizationId = useAuthenticatedUser().activeOrganizationId;
   const { data: chatThreadId } = useSuspenseQuery(
     fileChatThreadOptions({
       activeOrganizationId,
@@ -977,6 +1032,7 @@ const ResolvedFileChatOverlay = ({
     <FileChatOverlayInner
       activeFile={activeFile}
       chatThreadId={chatThreadId}
+      draftPersistence={draftPersistence}
       docxComments={docxComments}
       docxEditable={docxEditable}
       docxEditSafety={docxEditSafety}
@@ -997,18 +1053,19 @@ const FileChatOverlayInner = ({
   workspaceId,
   chatThreadId,
   activeFile,
+  activeDraft,
+  draftPersistence,
   activeExternal,
   docxEditable,
   docxEditSafety,
   docxEditorRef,
   docxComments,
   onDocxCommentsChange,
+  onActiveDraftChatBound,
   onNewThread,
 }: FileChatOverlayInnerProps) => {
   const t = useTranslations();
-  const activeOrganizationId = protectedRouteApi.useRouteContext({
-    select: (ctx) => ctx.user.activeOrganizationId,
-  });
+  const activeOrganizationId = useAuthenticatedUser().activeOrganizationId;
   const userContext = useChatUserContext();
   const getUserContext = useLatestCallback(() => userContext);
   const threadRef = useMemo<ChatThreadRef>(
@@ -1031,6 +1088,7 @@ const FileChatOverlayInner = ({
   // `getChatSendMode(threadRef)`, and `ChatAnonymizationLayer` drives the
   // in-editor highlight cue — one source, so display and send agree.
   const anonymized = useChatAnonymized(threadRef);
+  const [composerFocused, setComposerFocused] = useState(false);
   const getSendMode = useLatestCallback(() => getChatSendMode(threadRef));
   // Context matters this file chat draws on. Same plumbing as the main
   // chat and inspector: local state is seeded from the server's persisted
@@ -1056,22 +1114,35 @@ const FileChatOverlayInner = ({
     latestDocxCommentsRef.current = normalizeDocxComments(docxComments);
   }, [docxComments]);
   const hasDocxEditSurface =
-    activeFile !== undefined && docxEditorRef !== undefined;
+    (activeFile !== undefined || activeDraft !== undefined) &&
+    docxEditorRef !== undefined;
   // Whether the floating DOCX `ReviewBar` is showing for this entity — it
   // renders while any suggestion is pending/applying (mirrors the bar's own
   // `isPending` gate). When it is, the thread card lifts above the bar so the
   // two floating surfaces never overlap.
-  const reviewEntityId = activeFile?.entityId;
+  let reviewEntityId: string | undefined;
+  if (activeFile !== undefined) {
+    reviewEntityId = resolveFileReviewSessionId({
+      type: "file",
+      entityId: activeFile.entityId,
+    });
+  } else if (activeDraft !== undefined) {
+    reviewEntityId = resolveFileReviewSessionId({
+      type: "draft",
+      toolCallId: activeDraft.toolCallId,
+    });
+  } else {
+    reviewEntityId = resolveFileReviewSessionId({ type: "none" });
+  }
   const hasPendingReview = useReviewStore((state) => {
     if (reviewEntityId === undefined) {
       return false;
     }
     const session = state.sessions[reviewEntityId];
     return (
-      session !== undefined &&
-      session.some(
+      session?.some(
         (item) => item.status === "pending" || item.status === "applying",
-      )
+      ) === true
     );
   });
   const editModeOptionId = useChatEditModeStore((state) => state.optionId);
@@ -1079,7 +1150,7 @@ const FileChatOverlayInner = ({
     (state) => state.setOptionId,
   );
   const activeDocxEditModeState = resolveActiveDocxEditModeState({
-    activeFileEditable: activeFile?.editable,
+    activeFileEditable: activeDraft === undefined ? activeFile?.editable : true,
     docxEditable,
     hasDocxEditSurface,
     safety: docxEditSafety ?? "safe",
@@ -1087,7 +1158,8 @@ const FileChatOverlayInner = ({
   });
   const getLatestActiveDocxEditSelection = useLatestCallback(() => {
     const state = resolveActiveDocxEditModeState({
-      activeFileEditable: activeFile?.editable,
+      activeFileEditable:
+        activeDraft === undefined ? activeFile?.editable : true,
       docxEditable,
       hasDocxEditSurface,
       safety: docxEditSafety ?? "safe",
@@ -1124,16 +1196,19 @@ const FileChatOverlayInner = ({
   // hold several file fields, so an entity-only key would keep `editorReady`
   // true when switching to another file/version on the same entity and skip the
   // snapshot poll for the newly mounted editor.
-  const activeDocumentKey =
-    activeFile === undefined
-      ? undefined
-      : `${activeFile.entityId}:${activeFile.fileFieldId ?? ""}`;
+  const activeDocumentKey = activeFile
+    ? `${activeFile.entityId}:${activeFile.fileFieldId ?? ""}`
+    : activeDraft?.toolCallId;
   const [readyForDocumentKey, setReadyForDocumentKey] =
     useState(activeDocumentKey);
   if (activeDocumentKey !== readyForDocumentKey) {
     setReadyForDocumentKey(activeDocumentKey);
     setEditorReady(false);
   }
+  useExternalSyncEffect(() => {
+    lastSentDocxEditSnapshotRef.current = null;
+    return undefined;
+  }, [activeDocumentKey]);
   useExternalSyncEffect(() => {
     if (editorReady || !hasDocxEditSurface) {
       return undefined;
@@ -1208,6 +1283,25 @@ const FileChatOverlayInner = ({
       supportsDocxEdits: true,
     };
   });
+  const getActiveDraft = useLatestCallback(() => {
+    if (!activeDraft) {
+      return panic("Active draft context requested without an active draft");
+    }
+    const snapshot =
+      docxEditorRef?.current?.createAIEditSnapshot() ??
+      lastSentDocxEditSnapshotRef.current;
+    if (snapshot === null) {
+      return panic("Active draft context requested before its snapshot exists");
+    }
+    lastSentDocxEditSnapshotRef.current = snapshot;
+    return {
+      ...activeDraft,
+      docxEditSnapshot: {
+        blocks: snapshot.blocks,
+        canApplyEdits: Boolean(docxEditable),
+      },
+    };
+  });
   const getActiveExternal = useLatestCallback(() => activeExternal);
   const handleActiveDocxEditToolCall = useLatestCallback(
     (input: ApplyActiveDocxEditsInput): ApplyActiveDocxEditsOutput => {
@@ -1216,7 +1310,7 @@ const FileChatOverlayInner = ({
       // touched here; the user reviews each suggestion in the
       // panel and the unlock prompt only fires when the user
       // actually clicks Accept.
-      if (!activeFile) {
+      if (reviewEntityId === undefined) {
         return {
           version: 1,
           applied: [],
@@ -1240,7 +1334,7 @@ const FileChatOverlayInner = ({
       // preview + apply both handle that defensively.
       const lastSnapshot = lastSentDocxEditSnapshotRef.current;
       const { queuedIds, skipped, items } = queueReviewSuggestions({
-        entityId: activeFile.entityId,
+        entityId: reviewEntityId,
         prepared,
         snapshotBlocks: lastSnapshot
           ? lastSnapshot.blocks
@@ -1254,6 +1348,7 @@ const FileChatOverlayInner = ({
       // `persisted` stays false => resolve/revert never call the server).
       if (
         docxEditorRef !== undefined &&
+        activeFile !== undefined &&
         workspaceId !== undefined &&
         items.length > 0
       ) {
@@ -1299,6 +1394,7 @@ const FileChatOverlayInner = ({
     getSendMode,
     getUserContext,
     ...(activeExternal ? { getActiveExternal: () => getActiveExternal() } : {}),
+    ...(activeDraft ? { getActiveDraft: () => getActiveDraft() } : {}),
     ...(activeFile ? { getActiveFile: () => getActiveFile() } : {}),
     ...(hasDocxEditSurface
       ? {
@@ -1316,6 +1412,19 @@ const FileChatOverlayInner = ({
     context: chatThreadContext,
   });
   const { data } = useSuspenseQuery(threadQueryOptions);
+  const hasPersistedDraftChatBinding =
+    activeDraft !== undefined &&
+    hasPersistedActiveDraftChatBinding({
+      activeDraft,
+      messages: data.messages,
+    });
+  useExternalSyncEffect(() => {
+    if (!hasPersistedDraftChatBinding) {
+      return undefined;
+    }
+    onActiveDraftChatBound?.(chatThreadId);
+    return undefined;
+  }, [chatThreadId, hasPersistedDraftChatBinding, onActiveDraftChatBound]);
   const queryClient = useQueryClient();
   // Persists the composer (+) menu's Models submenu selection into this
   // thread's cache, mirroring `ChatThreadPage`'s wiring so the file-chat (+)
@@ -1371,6 +1480,7 @@ const FileChatOverlayInner = ({
     removeQueuedMessage,
     stop,
     isGenerating,
+    turnAbandoned,
     alwaysApprovedTools,
     conversationApprovedTools,
     handleApprove,
@@ -1380,6 +1490,7 @@ const FileChatOverlayInner = ({
     handleAskUserEditAndRerun,
     handleAlwaysAllow,
     handleCreateDocumentResolve,
+    handleOpenCreateDocumentDraft,
     handleOpenCreatedDocument,
     createDocumentMatters,
     isLoadingCreateDocumentMatters,
@@ -1389,6 +1500,7 @@ const FileChatOverlayInner = ({
   } = useChatSession({
     chat,
     conversationId: threadRef.threadId,
+    getContextMatterIds,
     getDocxEditRepresentation,
     getEditApplyMode,
     getSendMode,
@@ -1398,6 +1510,10 @@ const FileChatOverlayInner = ({
   });
   const { ensureAIAvailable, openIfAIUnavailable } = useAIKeyGate();
   const [panelOpen, setPanelOpen] = useState(false);
+  const isDraftChatFrozen = (): boolean =>
+    activeDraft !== undefined &&
+    getCreateDocumentDraftPersistence(activeDraft.toolCallId).status ===
+      "saving";
   const handlePromptSubmit = useLatestCallback(
     async ({
       prompt,
@@ -1407,6 +1523,9 @@ const FileChatOverlayInner = ({
       files: ChatDraftAttachment[];
     }) => {
       try {
+        if (isDraftChatFrozen()) {
+          return;
+        }
         if (!(await ensureAIAvailable())) {
           return;
         }
@@ -1436,7 +1555,12 @@ const FileChatOverlayInner = ({
 
   let filePlaceholder: string | undefined;
   let filePlaceholderAction: string | undefined;
-  if (activeFile === undefined) {
+  if (activeDraft) {
+    filePlaceholder = t("chat.editableFilePlaceholder", {
+      fileName: activeDraft.fileName,
+    });
+    filePlaceholderAction = t("chat.editableFilePlaceholderAction");
+  } else if (activeFile === undefined) {
     if (activeExternal) {
       filePlaceholder = t("chat.externalSourcePlaceholder", {
         title: activeExternal.title,
@@ -1462,25 +1586,56 @@ const FileChatOverlayInner = ({
 
   // Check eligibility for suggested prompts using draft state (avoids
   // unnecessary API calls when user is typing).
-  const lastMessageId = messages.at(-1)?.id ?? null;
-  const lastMessageRole = messages.at(-1)?.role ?? null;
+  const lastMessage = messages.at(-1);
+  const [editingAskUserToolCallIds, setEditingAskUserToolCallIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set<string>());
+  const handleAskUserEditingChange = useCallback(
+    (toolCallId: string, isEditing: boolean) => {
+      setEditingAskUserToolCallIds((current) => {
+        if (current.has(toolCallId) === isEditing) {
+          return current;
+        }
+        const next = new Set(current);
+        if (isEditing) {
+          next.add(toolCallId);
+        } else {
+          next.delete(toolCallId);
+        }
+        return next;
+      });
+    },
+    [],
+  );
   const editorIsInitiallyEmpty = useIsChatDraftEmpty(threadRef);
-  const eligibleForSuggestions =
-    editorIsInitiallyEmpty &&
-    !isGenerating &&
-    lastMessageId !== null &&
-    lastMessageRole === "assistant";
+  const suggestedPromptsAvailability = resolveSuggestedPromptsAvailability({
+    editorIsEmpty: editorIsInitiallyEmpty,
+    error,
+    isGenerating,
+    lastMessage: lastMessage ?? null,
+    turnAbandoned,
+    turnOwner: resolveSuggestedPromptsTurnOwner({
+      approvalPendingMessageId,
+      hasReopenedAskUser: editingAskUserToolCallIds.size > 0,
+      lastMessage: lastMessage ?? null,
+    }),
+  });
+  const lastMessageId =
+    suggestedPromptsAvailability.status === "eligible"
+      ? suggestedPromptsAvailability.lastMessageId
+      : "";
   const { data: suggestedPromptsData } = useQuery(
     chatThreadSuggestedPromptsOptions({
       activeOrganizationId,
-      enabled: eligibleForSuggestions,
-      lastMessageId: lastMessageId ?? "",
+      enabled: suggestedPromptsAvailability.status === "eligible",
+      lastMessageId,
       threadRef,
     }),
   );
-  const suggestedPrompts = suggestedPromptsData
-    ? suggestedPromptsData.prompts
-    : [];
+  const suggestedPrompts =
+    suggestedPromptsAvailability.status === "eligible" && suggestedPromptsData
+      ? suggestedPromptsData.prompts
+      : [];
   const suggestedFollowupPrompt = suggestedPrompts.at(0) ?? undefined;
 
   const editorController = useChatEditor({
@@ -1912,6 +2067,9 @@ const FileChatOverlayInner = ({
   // rotation remount only swaps the surface, while the old Chat
   // instance would keep streaming inside the query cache.
   const startNewThread = () => {
+    if (isDraftChatFrozen()) {
+      return;
+    }
     stop();
     shouldFocusComposerAfterNewThreadRef.current = true;
     setPanelOpen(false);
@@ -1929,6 +2087,12 @@ const FileChatOverlayInner = ({
     stickToBottomRef.current = true;
     el.scrollTop = el.scrollHeight;
   }, [lastMessageId, panelOpen]);
+  let sendDisabledReason: "draft-saving" | "editor-loading" | undefined;
+  if (draftPersistence.status === "saving") {
+    sendDisabledReason = "draft-saving";
+  } else if ((activeFile || activeDraft) && docxEditorRef && !editorReady) {
+    sendDisabledReason = "editor-loading";
+  }
   // While pinned to the bottom, follow every content growth — streaming tokens
   // during "preparation" steps, the reasoning block expanding, and the async
   // follow-up chips arriving after the answer — so the view tracks the content
@@ -2004,6 +2168,7 @@ const FileChatOverlayInner = ({
           >
             <ChatThreadMessages
               activeFileName={activeFile?.fileName}
+              assistantTextDensity="compact"
               approvalPendingMessageId={approvalPendingMessageId}
               error={error}
               hasOlderMessages={olderCursor !== null}
@@ -2012,9 +2177,11 @@ const FileChatOverlayInner = ({
               loadOlderError={loadOlderError}
               messages={messages}
               onAskUserEditAndRerun={handleAskUserEditAndRerun}
+              onAskUserEditingChange={handleAskUserEditingChange}
               onAskUserSubmit={handleAskUserSubmit}
               onCreateDocumentResolve={handleCreateDocumentResolve}
               onLoadOlder={loadOlder}
+              onOpenCreateDocumentDraft={handleOpenCreateDocumentDraft}
               onOpenCreatedDocument={handleOpenCreatedDocument}
               onRemoveQueuedMessage={removeQueuedMessage}
               onResend={resendLatestMessage}
@@ -2043,7 +2210,10 @@ const FileChatOverlayInner = ({
                 // Mirror the PromptBar send guard: when an editable DOCX's edit
                 // snapshot isn't ready, block the chip send too so the model
                 // never sees a follow-up without current edit context.
-                if (!canSubmitWithCurrentDocxSnapshot()) {
+                if (
+                  isDraftChatFrozen() ||
+                  !canSubmitWithCurrentDocxSnapshot()
+                ) {
                   return;
                 }
                 editorController.setContent(prompt);
@@ -2072,9 +2242,12 @@ const FileChatOverlayInner = ({
         <ChatAnonymizationLayer
           editor={editorController.editor}
           enabled={anonymized}
+          focused={composerFocused}
+          ownerKey={getChatThreadKey(threadRef)}
           workspaceId={workspaceId ?? threadRef.threadId}
         />
         <PromptBar
+          anonymized={anonymized}
           attachmentsEnabled
           attentionPulseSeq={attentionPulseSeq}
           canSubmitNow={canSubmitWithCurrentDocxSnapshot}
@@ -2089,19 +2262,31 @@ const FileChatOverlayInner = ({
           }}
           skillsOrganizationId={activeOrganizationId}
           emptyPlaceholder={
-            (activeFile || activeExternal) && filePlaceholderAction ? (
+            (activeFile || activeDraft || activeExternal) &&
+            filePlaceholderAction ? (
               <span className="text-foreground-ghost flex min-w-0 items-center gap-1.5 text-[13px] leading-5">
                 <span className="shrink-0">{filePlaceholderAction}</span>
                 <BidiText
                   as="span"
                   className="text-foreground-label max-w-64 truncate"
                 >
-                  {activeFile?.fileName ?? activeExternal?.title}
+                  {activeFile?.fileName ??
+                    activeDraft?.fileName ??
+                    activeExternal?.title}
                 </BidiText>
               </span>
             ) : undefined
           }
           layout="floating"
+          onFocusChange={setComposerFocused}
+          minimizedThreadAction={
+            !panelOpen && hasThreadContent
+              ? {
+                  label: t("chat.aiThread"),
+                  onOpen: () => setPanelOpen(true),
+                }
+              : undefined
+          }
           onStop={() => {
             stop();
           }}
@@ -2125,16 +2310,22 @@ const FileChatOverlayInner = ({
           }}
           pendingCount={0}
           queueWhileGenerating
-          sendDisabledReason={
-            activeFile && docxEditorRef && !editorReady
-              ? "editor-loading"
-              : undefined
-          }
+          sendDisabledReason={sendDisabledReason}
           status={isGenerating ? "generating" : "idle"}
           dock={
             <ChatComposerDock
               data={data}
-              onNewThread={hasMessages ? startNewThread : null}
+              models={{
+                activeOrganizationId,
+                threadRef,
+                selectedModel: data.model,
+                selectModel: modelSelection.selectModel,
+              }}
+              onNewThread={
+                hasMessages && draftPersistence.status !== "saving"
+                  ? startNewThread
+                  : null
+              }
               leadingContext={
                 // The matter control is a real picker on every surface, so
                 // the user can widen or narrow the file chat's context just

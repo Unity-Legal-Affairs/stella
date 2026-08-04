@@ -67,12 +67,12 @@ import { toAPIError } from "@/lib/errors/api";
 import type {
   Negotiation,
   PlaybookPositionsValue,
-} from "@/routes/_protected.knowledge/-components/playbook-types";
+} from "@/lib/knowledge/playbook-types";
 import {
   PLAYBOOK_PICKER_LIMIT,
   playbookDetailOptions,
   playbooksOptions,
-} from "@/routes/_protected.knowledge/-queries";
+} from "@/lib/knowledge/queries";
 
 type PlaybookFacetProps = {
   entityId: string;

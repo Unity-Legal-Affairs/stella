@@ -39,7 +39,7 @@ const isAstNode = (node: unknown): node is AstNode =>
   typeof node === "object" &&
   node !== null &&
   "type" in node &&
-  typeof (node as { type: unknown }).type === "string";
+  typeof node.type === "string";
 
 const filenameForContext = (context: RuleContext): string =>
   (context.filename ?? context.getFilename?.() ?? "").replaceAll("\\", "/");
@@ -47,8 +47,51 @@ const filenameForContext = (context: RuleContext): string =>
 const isAllowlistedFile = (filename: string): boolean =>
   filename.endsWith(ALLOWLISTED_FILE);
 
+// The static text of a string literal or a zero-expression template
+// literal: `` `jsonb` `` and `"jsonb"` name the same SQL type, so a backtick
+// literal must not bypass the rule.
+const staticStringValue = (node: unknown): string | null => {
+  if (isStringLiteral(node)) {
+    return node.value;
+  }
+  if (!isAstNode(node) || node.type !== "TemplateLiteral") {
+    return null;
+  }
+  const expressions = node.expressions;
+  const quasis = node.quasis;
+  if (!Array.isArray(expressions) || expressions.length !== 0) {
+    return null;
+  }
+  if (!Array.isArray(quasis) || quasis.length !== 1) {
+    return null;
+  }
+  const quasi = quasis[0];
+  if (!isAstNode(quasi)) {
+    return null;
+  }
+  const value = quasi.value;
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const cooked = (value as { cooked?: unknown }).cooked;
+  return typeof cooked === "string" ? cooked : null;
+};
+
 const isJsonbLiteral = (node: unknown): boolean =>
-  isStringLiteral(node) && node.value === "jsonb";
+  staticStringValue(node) === "jsonb";
+
+// Static member name of a call target: `p.jsonb`, `p["jsonb"]`, and
+// `` p[`jsonb`] `` all reach the same pg-core export, so computed string
+// keys must not bypass the rule.
+const staticMemberName = (callee: AstNode): string | null => {
+  if (callee.type !== "MemberExpression") {
+    return null;
+  }
+  if (callee.computed === false) {
+    return isIdentifier(callee.property) ? callee.property.name : null;
+  }
+  return staticStringValue(callee.property);
+};
 
 // A `dataType` callback whose body yields the "jsonb" string. Covers the
 // arrow-expression body `() => "jsonb"`, the block-bodied arrow
@@ -84,6 +127,18 @@ const returnsJsonbLiteral = (node: unknown): boolean => {
   );
 };
 
+// `dataType` as an identifier, quoted, or statically computed key:
+// `{"dataType": ...}` and `{["dataType"]: ...}` are the same key. A computed
+// IDENTIFIER key (`{[dataType]: ...}`) is a variable reference, not the
+// static key, so only the non-computed branch accepts identifiers.
+const isDataTypeProperty = (property: AstNode): boolean => {
+  const key = property.key;
+  if (staticStringValue(key) === "dataType") {
+    return true;
+  }
+  return property.computed === false && isIdentifier(key, "dataType");
+};
+
 // `{ dataType: () => "jsonb" }` config object passed to customType.
 const hasJsonbDataType = (node: unknown): boolean => {
   if (!isAstNode(node) || node.type !== "ObjectExpression") {
@@ -97,8 +152,7 @@ const hasJsonbDataType = (node: unknown): boolean => {
     (property) =>
       isAstNode(property) &&
       property.type === "Property" &&
-      property.computed === false &&
-      isIdentifier(property.key, "dataType") &&
+      isDataTypeProperty(property) &&
       returnsJsonbLiteral(property.value),
   );
 };
@@ -198,14 +252,15 @@ export default {
               return;
             }
 
-            // `<ns>.jsonb(...)` where `<ns>` is a pg-core namespace alias.
-            if (
+            // `<ns>.jsonb(...)` (or a computed-key equivalent) where `<ns>`
+            // is a pg-core namespace alias.
+            const namespaceMember =
               callee.type === "MemberExpression" &&
-              callee.computed === false &&
               isIdentifier(callee.object) &&
-              pgCoreNamespaceAliases.has(callee.object.name) &&
-              isIdentifier(callee.property, "jsonb")
-            ) {
+              pgCoreNamespaceAliases.has(callee.object.name)
+                ? staticMemberName(callee)
+                : null;
+            if (namespaceMember === "jsonb") {
               context.report({ node, messageId: "stockJsonbCall" });
               return;
             }
@@ -213,12 +268,7 @@ export default {
             // `customType<...>({ dataType: () => "jsonb" })` outside columns.ts.
             const bareCustomType =
               isIdentifier(callee) && customTypeAliases.has(callee.name);
-            const namespacedCustomType =
-              callee.type === "MemberExpression" &&
-              callee.computed === false &&
-              isIdentifier(callee.object) &&
-              pgCoreNamespaceAliases.has(callee.object.name) &&
-              isIdentifier(callee.property, "customType");
+            const namespacedCustomType = namespaceMember === "customType";
 
             if (!bareCustomType && !namespacedCustomType) {
               return;

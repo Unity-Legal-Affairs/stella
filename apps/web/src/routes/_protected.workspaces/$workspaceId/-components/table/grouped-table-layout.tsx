@@ -12,6 +12,22 @@ import { useTranslations } from "use-intl";
 import { Skeleton } from "@stll/ui/components/skeleton";
 import { cn } from "@stll/ui/lib/utils";
 
+import {
+  getInternalPropertyId,
+  toTableEntities,
+} from "@/components/workspaces/entity-utils";
+import { useSyncJustificationChunks } from "@/components/workspaces/hooks/use-sync-justifications";
+import { SelectColorIcon } from "@/components/workspaces/properties/shared";
+import {
+  buildDocTypeGateLabels,
+  resolveDocumentTypeClassifier,
+  selectGroupColumns,
+} from "@/components/workspaces/table/group-columns";
+import { workspaceTableFeatures } from "@/components/workspaces/table/table-features";
+import type {
+  TableColumnDef,
+  TableTreeNode,
+} from "@/components/workspaces/table/types";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { useFormatter } from "@/i18n/formatting-context";
 import { detached } from "@/lib/detached";
@@ -22,6 +38,12 @@ import type {
   WorkspaceProperty,
   WorkspaceView,
 } from "@/lib/types";
+import {
+  groupCountsOptions,
+  useKanbanGroupOptions,
+  visibleEntityFieldIds,
+} from "@/lib/workspaces/queries/entities";
+import { propertiesOptions } from "@/lib/workspaces/queries/properties";
 import { BottomRow } from "@/routes/_protected.workspaces/$workspaceId/-components/bottom-row";
 import { EmptyState } from "@/routes/_protected.workspaces/$workspaceId/-components/empty-state";
 import {
@@ -32,23 +54,12 @@ import {
   resolveKanbanGrouping,
 } from "@/routes/_protected.workspaces/$workspaceId/-components/kanban/kanban-view.logic";
 import type { EntityGroup } from "@/routes/_protected.workspaces/$workspaceId/-components/kanban/kanban-view.logic";
-import { SelectColorIcon } from "@/routes/_protected.workspaces/$workspaceId/-components/properties/shared";
-import {
-  buildDocTypeGateLabels,
-  resolveDocumentTypeClassifier,
-  selectGroupColumns,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/table/group-columns";
 import { GroupScopeProvider } from "@/routes/_protected.workspaces/$workspaceId/-components/table/group-scope";
 import { MobileTableOrientationGate } from "@/routes/_protected.workspaces/$workspaceId/-components/table/mobile-table-orientation-gate";
 import {
   DEFAULT_TABLE_COLUMN_MIN_SIZE,
   useTableColumns,
 } from "@/routes/_protected.workspaces/$workspaceId/-components/table/table-columns";
-import { workspaceTableFeatures } from "@/routes/_protected.workspaces/$workspaceId/-components/table/table-features";
-import type {
-  TableColumnDef,
-  TableTreeNode,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/table/types";
 import {
   WorkspaceGridCell,
   WorkspaceGridRow,
@@ -62,19 +73,8 @@ import {
   getWorkspaceGridTemplateColumns,
 } from "@/routes/_protected.workspaces/$workspaceId/-components/table/workspace-table/internals-helpers";
 import { useTableStore } from "@/routes/_protected.workspaces/$workspaceId/-hooks/table-store";
-import { useSyncJustificationChunks } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-sync-justifications";
 import { useSyncSelectedEntities } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-sync-selected-entities";
 import { useTableState } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-table-state";
-import {
-  groupCountsOptions,
-  useKanbanGroupOptions,
-  visibleEntityFieldIds,
-} from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import { propertiesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
-import {
-  getInternalPropertyId,
-  toTableEntities,
-} from "@/routes/_protected.workspaces/$workspaceId/-utils";
 
 const GROUP_TABLE_PAGE_SIZE = 200;
 

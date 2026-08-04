@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -20,38 +21,45 @@ import {
 import { ExternalReferencePanel } from "@/components/inspector/external-reference-panel";
 import { MetadataPanelSkeleton } from "@/components/inspector/file-facets";
 import { FileTabPanel } from "@/components/inspector/file-tab-panel";
-import { InspectorRail } from "@/components/inspector/inspector-rail";
 import {
-  isGenericInspectorTab,
-  useInspectorStore,
-} from "@/components/inspector/inspector-store";
-import type {
-  FileTab,
-  GenericTab,
-} from "@/components/inspector/inspector-store";
+  resolveFileFieldPropertyId,
+  shouldReplaceFileFieldAfterSync,
+} from "@/components/inspector/inspector-panel.logic";
+import { InspectorRail } from "@/components/inspector/inspector-rail";
 import {
   InspectorTabHeader,
   MatterOriginLink,
 } from "@/components/inspector/inspector-tab-header";
+import {
+  closeInspectorTabsForEntities,
+  isGenericInspectorTab,
+  useInspectorTabsStore,
+} from "@/components/inspector/inspector-tabs-store";
+import type {
+  FileTab,
+  GenericTab,
+} from "@/components/inspector/inspector-tabs-store";
 import { buildMaximizeTabAction } from "@/components/inspector/maximize-tab";
 import { SkillResourcePanel } from "@/components/inspector/skill-resource-panel";
 import { useDocxTabEditSession } from "@/components/inspector/use-docx-tab-edit-session";
 import { useFileTabRename } from "@/components/inspector/use-file-tab-rename";
 import { usePdfTabZoom } from "@/components/inspector/use-pdf-tab-zoom";
 import { useTabContextMenu } from "@/components/inspector/use-tab-context-menu";
+import { useSelectedFileVersionMissing } from "@/components/inspector/versions-facet";
 import { getInspectorView } from "@/components/inspector/view-registry";
+import { MatterMetadataPanel } from "@/components/workspaces/matter-metadata-sheet";
+import { TaskDetailPanel } from "@/components/workspaces/tasks/task-detail-panel";
 import { useExternalSyncEffect, useMountEffect } from "@/hooks/use-effect";
 import { usePermissions } from "@/hooks/use-permissions";
 import { getAnalytics } from "@/lib/analytics/provider";
 import { useAuthenticatedUser } from "@/lib/authenticated-user-context";
 import { detached } from "@/lib/detached";
+import { APIError } from "@/lib/errors/api";
 import { resolveMatterColor } from "@/lib/matter-colors";
 import { getCachedAnonymization } from "@/lib/pdf/anonymization-cache";
-import { MatterMetadataPanel } from "@/routes/_protected.workspaces/$workspaceId/-components/matter-metadata-sheet";
-import { TaskDetailPanel } from "@/routes/_protected.workspaces/$workspaceId/-components/tasks/task-detail-panel";
-import { entityOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import { useWorkspaceStore } from "@/routes/_protected.workspaces/$workspaceId/-store";
-import { workspaceOptions } from "@/routes/_protected.workspaces/-queries";
+import { workspacesKeys } from "@/lib/workspaces/queries.logic";
+import { entityOptions } from "@/lib/workspaces/queries/entities";
+import { useWorkspaceStore } from "@/lib/workspaces/store";
 
 type InspectorPanelProps = {
   /**
@@ -63,6 +71,21 @@ type InspectorPanelProps = {
    */
   workspaceId?: string | undefined;
 };
+
+type InspectorWorkspaceOrigin = {
+  color: string | null;
+  name: string;
+};
+
+const isInspectorWorkspaceOrigin = (
+  value: unknown,
+): value is InspectorWorkspaceOrigin =>
+  typeof value === "object" &&
+  value !== null &&
+  "name" in value &&
+  typeof value.name === "string" &&
+  "color" in value &&
+  (typeof value.color === "string" || value.color === null);
 
 const hasInAppHistoryEntry = (): boolean => {
   const state: unknown = window.history.state;
@@ -77,18 +100,18 @@ export const InspectorPanel = ({ workspaceId }: InspectorPanelProps) => {
   const t = useTranslations();
   const canUpdateEntity = usePermissions({ entity: ["update"] });
   const activeOrganizationId = useAuthenticatedUser().activeOrganizationId;
-  const { tabs, activeId } = useInspectorStore(
+  const { tabs, activeId } = useInspectorTabsStore(
     useShallow((s) => ({
       tabs: s.tabs,
       activeId: s.activeId,
     })),
   );
-  const setActive = useInspectorStore((s) => s.setActive);
-  const closeTab = useInspectorStore((s) => s.closeTab);
-  const closeAll = useInspectorStore((s) => s.closeAll);
-  const minimized = useInspectorStore((s) => s.minimized);
-  const setMinimized = useInspectorStore((s) => s.setMinimized);
-  const openChat = useInspectorStore((s) => s.openChat);
+  const setActive = useInspectorTabsStore((s) => s.setActive);
+  const closeTab = useInspectorTabsStore((s) => s.closeTab);
+  const closeAll = useInspectorTabsStore((s) => s.closeAll);
+  const minimized = useInspectorTabsStore((s) => s.minimized);
+  const setMinimized = useInspectorTabsStore((s) => s.setMinimized);
+  const openChat = useInspectorTabsStore((s) => s.openChat);
   // The inspector pane mounts under non-workspace routes too
   // (e.g. /chat for a global chat tab). All callers below use
   // absolute `to:` paths, so we don't need a `from` template —
@@ -96,6 +119,7 @@ export const InspectorPanel = ({ workspaceId }: InspectorPanelProps) => {
   // route-typed navigation when the inspector is open off-workspace.
   const navigate = useNavigate();
   const setPdfViewerState = useWorkspaceStore((s) => s.setPdfViewerState);
+  const panelQueryClient = useQueryClient();
 
   // Originating matter — surfaced in every tab header as
   // "label · Matter" so users always know which matter the tab
@@ -103,10 +127,27 @@ export const InspectorPanel = ({ workspaceId }: InspectorPanelProps) => {
   // moving to nullable matter binding in Phase D). Cache hit thanks
   // to the workspace route loader. Fetch is skipped when the pane
   // is mounted off-workspace (e.g. a global chat tab on /chat).
-  const { data: workspace } = useQuery({
-    ...workspaceOptions(workspaceId ?? ""),
-    enabled: workspaceId !== undefined,
-  });
+  const subscribeWorkspace = useCallback(
+    (onStoreChange: () => void) =>
+      panelQueryClient.getQueryCache().subscribe(() => onStoreChange()),
+    [panelQueryClient],
+  );
+  const getWorkspaceSnapshot = useCallback(() => {
+    if (workspaceId === undefined) {
+      return undefined;
+    }
+    const cachedWorkspace = panelQueryClient.getQueryData(
+      workspacesKeys.byId(workspaceId),
+    );
+    return isInspectorWorkspaceOrigin(cachedWorkspace)
+      ? cachedWorkspace
+      : undefined;
+  }, [panelQueryClient, workspaceId]);
+  const workspace = useSyncExternalStore(
+    subscribeWorkspace,
+    getWorkspaceSnapshot,
+    getWorkspaceSnapshot,
+  );
   const matterOrigin = useMemo(
     () =>
       workspaceId !== undefined && workspace?.name
@@ -158,12 +199,12 @@ export const InspectorPanel = ({ workspaceId }: InspectorPanelProps) => {
   // suggestions don't need this watcher: the document route clears
   // them itself via its `setFileMetadataLane(id, "closed")` unmount
   // hook.
-  const suggestionOwnerRouteId = useInspectorStore((s) =>
+  const suggestionOwnerRouteId = useInspectorTabsStore((s) =>
     s.reviveSuggestion !== null && isGenericInspectorTab(s.reviveSuggestion)
       ? s.reviveSuggestion.ownerRouteId
       : undefined,
   );
-  const clearReviveSuggestion = useInspectorStore(
+  const clearReviveSuggestion = useInspectorTabsStore(
     (s) => s.clearReviveSuggestion,
   );
   const suggestionOwnerRouteActive = useRouterState({
@@ -330,12 +371,12 @@ export const InspectorPanel = ({ workspaceId }: InspectorPanelProps) => {
       // Switch the surviving tab into "metadata-only" persona only
       // after full-view navigation succeeds; otherwise side peek stays
       // visually intact on rejected or aborted transitions.
-      useInspectorStore
+      useInspectorTabsStore
         .getState()
         .setFileMetadataLane(activeTab.id, "expanded");
     } catch (error) {
       setPdfViewerState(previousPdfViewer);
-      useInspectorStore
+      useInspectorTabsStore
         .getState()
         .setFileMetadataLane(activeTab.id, previousMetadataLane);
       throw error;
@@ -355,7 +396,7 @@ export const InspectorPanel = ({ workspaceId }: InspectorPanelProps) => {
       // where the file was maximized from. Full-view internal file
       // switches use replace navigation, so browser back lands on
       // the original table/overview/filesystem context.
-      useInspectorStore.getState().setFileMetadataLane(tab.id, "closed");
+      useInspectorTabsStore.getState().setFileMetadataLane(tab.id, "closed");
       if (hasInAppHistoryEntry()) {
         window.history.back();
         return;
@@ -416,8 +457,6 @@ export const InspectorPanel = ({ workspaceId }: InspectorPanelProps) => {
   useLayoutEffect(() => {
     pdfRecencyRef.current = Array.from(mountedPdfIds);
   }, [mountedPdfIds]);
-
-  const panelQueryClient = useQueryClient();
 
   // One context menu shared by every ribbon label. Only the active
   // tab's ribbon is mounted at a time so a single instance suffices,
@@ -550,11 +589,11 @@ export const InspectorPanel = ({ workspaceId }: InspectorPanelProps) => {
 
       {pdfTabs.map((tab) => (
         <CurrentFileFieldSync
+          isActive={!minimized && tab.id === activeId}
           key={`${tab.workspaceId}:${tab.entityId}:${tab.propertyId ?? tab.id}`}
           tab={tab}
         />
       ))}
-
       {/* Document content — render all open document tabs, show only the active one. */}
       {pdfTabs.map((tab) => (
         <FileTabPanel
@@ -603,14 +642,26 @@ export const InspectorPanel = ({ workspaceId }: InspectorPanelProps) => {
   );
 };
 
-const CurrentFileFieldSync = ({ tab }: { tab: FileTab }) => {
-  const replaceFileFieldId = useInspectorStore((s) => s.replaceFileFieldId);
+const CurrentFileFieldSync = ({
+  isActive,
+  tab,
+}: {
+  isActive: boolean;
+  tab: FileTab;
+}) => {
+  const replaceFileFieldId = useInspectorTabsStore((s) => s.replaceFileFieldId);
   const [currentFileFieldIdsByProperty] = useState(
     () => new Map<string, string>(),
   );
-  const { data: entity } = useQuery(
+  const { data: entity, error } = useQuery(
     entityOptions(tab.workspaceId, tab.entityId),
   );
+
+  useExternalSyncEffect(() => {
+    if (APIError.is(error) && error.status === 404) {
+      closeInspectorTabsForEntities([tab.entityId]);
+    }
+  }, [error, tab.entityId]);
 
   const activeFileField = entity?.fields.find((field) => {
     if (field.content.type !== "file") {
@@ -618,14 +669,25 @@ const CurrentFileFieldSync = ({ tab }: { tab: FileTab }) => {
     }
     return field.id === tab.id;
   });
+  const filePropertyId = resolveFileFieldPropertyId({
+    activeFilePropertyId: activeFileField?.propertyId,
+    currentFileFieldIdsByProperty,
+    fieldId: tab.id,
+    tabPropertyId: tab.propertyId,
+  });
   const latestFileFieldForProperty =
-    tab.propertyId === undefined
+    filePropertyId === undefined
       ? undefined
       : entity?.fields.findLast(
           (field) =>
-            field.propertyId === tab.propertyId &&
+            field.propertyId === filePropertyId &&
             field.content.type === "file",
         );
+  const isSelectedFieldMissing = useSelectedFileVersionMissing({
+    enabled: isActive && activeFileField === undefined,
+    fieldId: tab.id,
+    workspaceId: tab.workspaceId,
+  });
 
   useLayoutEffect(() => {
     if (activeFileField !== undefined) {
@@ -645,7 +707,13 @@ const CurrentFileFieldSync = ({ tab }: { tab: FileTab }) => {
     const previousCurrentFieldId = currentFileFieldIdsByProperty.get(
       latestFileFieldForProperty.propertyId,
     );
-    if (previousCurrentFieldId !== tab.id) {
+    if (
+      !shouldReplaceFileFieldAfterSync({
+        isSelectedFieldMissing,
+        previousCurrentFieldId,
+        selectedFieldId: tab.id,
+      })
+    ) {
       return;
     }
 
@@ -665,8 +733,11 @@ const CurrentFileFieldSync = ({ tab }: { tab: FileTab }) => {
   }, [
     activeFileField,
     currentFileFieldIdsByProperty,
+    filePropertyId,
+    isSelectedFieldMissing,
     latestFileFieldForProperty,
     replaceFileFieldId,
+    tab.entityId,
     tab.id,
   ]);
 

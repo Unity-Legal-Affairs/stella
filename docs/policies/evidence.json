@@ -82,17 +82,16 @@
             "name: CI Checks",
             "name: Policy evidence",
             "name: Format",
-            "name: Typecheck",
+            "name: Code quality",
             "name: Test"
           ]
         },
         {
           "path": "scripts/verify.sh",
           "contains": [
-            "run_step \"Lint\"",
             "run_step \"Policy evidence\"",
             "run_step \"Format\"",
-            "run_step \"Typecheck\"",
+            "run_step \"Code quality\"",
             "run_step \"Test\""
           ]
         }
@@ -128,14 +127,14 @@
           "contains": ["acl: \"private\""]
         },
         {
-          "path": "apps/api/src/handlers/files/utils.ts",
+          "path": "apps/api/src/lib/file-key.ts",
           "contains": [
             "`${organizationId}/${workspaceId}/${fileId}",
             "export const createFileKey"
           ]
         },
         {
-          "path": "apps/api/src/handlers/uploads/lib.ts",
+          "path": "apps/api/src/lib/uploads/runtime.ts",
           "contains": ["PRESIGN_URL_EXPIRY_SECONDS = 5 * 60"]
         },
         {
@@ -150,7 +149,11 @@
       "evidence": [
         {
           "path": "apps/api/src/handlers/entities/delete.ts",
-          "contains": ["deleteS3Objects", ".delete(entities)"]
+          "contains": ["entityDeletionCleanupRequests", ".delete(entities)"]
+        },
+        {
+          "path": "apps/api/src/lib/entity-deletion-cleanup-queue.ts",
+          "contains": ["deleteS3Keys", "RETRY_MAX_DELAY_MS", "nextAttemptAt"]
         },
         {
           "path": "apps/api/src/handlers/workspaces/delete.ts",

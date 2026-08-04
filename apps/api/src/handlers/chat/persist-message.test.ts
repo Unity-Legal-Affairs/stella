@@ -3,10 +3,14 @@ import { describe, expect, test } from "bun:test";
 import { toSafeId } from "@/api/lib/branded-types";
 
 import {
+  toChatMessageContent,
+  toPersistableChatMessage,
+} from "./chat-message-parts";
+import {
   planAssistantFinishPersistence,
   planMessagePersistence,
 } from "./persist-message";
-import type { ChatMessageContent, PersistableChatMessage } from "./types";
+import type { PersistableChatMessage } from "./types";
 
 const workspaceId = toSafeId<"workspace">(
   "0dc54d0c-10d7-501d-897e-e801dbd0998c",
@@ -19,11 +23,11 @@ const chatMessageId = (id: string) => toSafeId<"chatMessage">(id);
 const stored = (message: PersistableChatMessage) => ({
   id: message.id,
   role: message.role,
-  content: {
+  content: toChatMessageContent({
     version: 2,
     data: message.parts,
     metadata: message.metadata,
-  } satisfies ChatMessageContent,
+  }),
 });
 
 const createDocumentInput = {
@@ -31,7 +35,7 @@ const createDocumentInput = {
   source: "@title Draft agreement",
 };
 
-const createDocumentApprovalRespondedMessage = {
+const createDocumentApprovalRespondedMessage = toPersistableChatMessage({
   id: chatMessageId("019aef0c-4df0-7d25-b5ad-cfa5a548fb2b"),
   role: "assistant",
   parts: [
@@ -44,9 +48,9 @@ const createDocumentApprovalRespondedMessage = {
       input: createDocumentInput,
     },
   ],
-} satisfies PersistableChatMessage;
+});
 
-const createDocumentFinishedMessage = {
+const createDocumentFinishedMessage = toPersistableChatMessage({
   ...createDocumentApprovalRespondedMessage,
   parts: [
     {
@@ -75,9 +79,9 @@ const createDocumentFinishedMessage = {
         `${workspaceId}:${entityId}).`,
     },
   ],
-} satisfies PersistableChatMessage;
+});
 
-const updateFieldsApprovalRespondedMessage = {
+const updateFieldsApprovalRespondedMessage = toPersistableChatMessage({
   id: chatMessageId("019aef0c-4df0-7d25-b5ad-cfa5a548fb2c"),
   role: "assistant",
   parts: [
@@ -105,9 +109,9 @@ const updateFieldsApprovalRespondedMessage = {
       },
     },
   ],
-} satisfies PersistableChatMessage;
+});
 
-const updateFieldsFinishedMessage = {
+const updateFieldsFinishedMessage = toPersistableChatMessage({
   ...updateFieldsApprovalRespondedMessage,
   parts: [
     {
@@ -144,7 +148,7 @@ const updateFieldsFinishedMessage = {
       content: "Updated Status to Reviewed.",
     },
   ],
-} satisfies PersistableChatMessage;
+});
 
 describe("chat approval persistence", () => {
   test("updates an approved create-document assistant message with the final output and text", () => {
@@ -186,11 +190,11 @@ describe("chat approval persistence", () => {
   });
 
   test("inserts a new final assistant message after an ordinary user turn", () => {
-    const userMessage = {
+    const userMessage = toPersistableChatMessage({
       id: chatMessageId("019aef0c-4df0-7d25-b5ad-cfa5a548fb2d"),
       role: "user",
       parts: [{ type: "text", content: "Create a document" }],
-    } satisfies PersistableChatMessage;
+    });
 
     const incomingPlan = planMessagePersistence({
       message: userMessage,
@@ -210,11 +214,11 @@ describe("chat approval persistence", () => {
   });
 
   test("does not overwrite user messages from the finish callback", () => {
-    const userMessage = {
+    const userMessage = toPersistableChatMessage({
       id: chatMessageId("019aef0c-4df0-7d25-b5ad-cfa5a548fb2e"),
       role: "user",
       parts: [{ type: "text", content: "Approved" }],
-    } satisfies PersistableChatMessage;
+    });
 
     const finishPlan = planAssistantFinishPersistence({
       existingIds: new Set([userMessage.id]),
@@ -225,29 +229,33 @@ describe("chat approval persistence", () => {
     expect(finishPlan).toEqual({ type: "none" });
   });
 
-  test("leaves approval-responded messages untouched when a stream aborts", () => {
+  test("updates approval-responded messages with the interrupted outcome", () => {
     const finishPlan = planAssistantFinishPersistence({
       existingIds: new Set([createDocumentFinishedMessage.id]),
-      finishOutcome: { type: "aborted" },
+      finishOutcome: { type: "interrupted", reason: "timeout" },
       message: createDocumentFinishedMessage,
     });
 
-    expect(finishPlan).toEqual({ type: "none" });
+    expect(finishPlan).toEqual({
+      type: "update",
+      messageId: createDocumentFinishedMessage.id,
+      message: createDocumentFinishedMessage,
+    });
   });
 });
 
 describe("chat finish persistence on client disconnect", () => {
-  const userMessage = {
+  const userMessage = toPersistableChatMessage({
     id: chatMessageId("019aef0c-4df0-7d25-b5ad-cfa5a548fb30"),
     role: "user",
     parts: [{ type: "text", content: "Draft a mutual NDA" }],
-  } satisfies PersistableChatMessage;
+  });
 
-  const completedAssistantMessage = {
+  const completedAssistantMessage = toPersistableChatMessage({
     id: chatMessageId("019aef0c-4df0-7d25-b5ad-cfa5a548fb31"),
     role: "assistant",
     parts: [{ type: "text", content: "Here is the completed draft." }],
-  } satisfies PersistableChatMessage;
+  });
 
   // A dropped client connection does not abort the metered provider call, so
   // the generation still reaches `onFinish` as completed. The completed (and
@@ -270,21 +278,19 @@ describe("chat finish persistence on client disconnect", () => {
     });
   });
 
-  // A metered-timeout / aborted-stream finish yields an incomplete message that
-  // must never be persisted, regardless of client connection state.
-  test("does not persist a generation cut off mid-stream", () => {
+  test("persists the terminal state of a generation cut off mid-stream", () => {
     const finishPlan = planAssistantFinishPersistence({
       existingIds: new Set([userMessage.id]),
-      finishOutcome: { type: "aborted" },
+      finishOutcome: { type: "interrupted", reason: "timeout" },
       message: completedAssistantMessage,
     });
 
-    expect(finishPlan).toEqual({ type: "none" });
+    expect(finishPlan).toEqual({
+      type: "insert",
+      message: completedAssistantMessage,
+    });
   });
 
-  // The genuine-error path never invokes `onFinish` in the streaming loop, so
-  // it never reaches persistence. Guard the adjacent invariant the planner is
-  // responsible for: a non-assistant message is never persisted from finish.
   test("does not persist a non-assistant finish message", () => {
     const finishPlan = planAssistantFinishPersistence({
       existingIds: new Set([userMessage.id]),
@@ -314,11 +320,11 @@ describe("chat finish persistence on client disconnect", () => {
 });
 
 describe("chat user-message persistence", () => {
-  const userMessage = {
+  const userMessage = toPersistableChatMessage({
     id: chatMessageId("019aef0c-4df0-7d25-b5ad-cfa5a548fb2f"),
     role: "user",
     parts: [{ type: "text", content: "Summarize this matter" }],
-  } satisfies PersistableChatMessage;
+  });
 
   test("does not append a re-sent message already present in the loaded window", () => {
     const result = planMessagePersistence({

@@ -1,8 +1,8 @@
 import { useChatEditorManager } from "@/components/chat-editor-provider";
 import type { ChatMentionOption } from "@/components/chat-mention-extension";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import type { ChatThreadRef } from "@/lib/chat-thread-ref";
 import { createChatThreadId } from "@/lib/chat-thread-ref";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
 
 /**
  * "Ask AI about this entity" — opens a fresh inspector chat tab
@@ -17,7 +17,7 @@ import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-
  */
 export const useRequestChatAbout = (workspaceId?: string) => {
   const { focusThread, insertMentionIntoThread } = useChatEditorManager();
-  const openChat = useInspectorStore((s) => s.openChat);
+  const openChat = useInspectorTabsStore((s) => s.openChat);
 
   return (mentions: ChatMentionOption | ChatMentionOption[]) => {
     // Outside a workspace there's no inspector to open. The

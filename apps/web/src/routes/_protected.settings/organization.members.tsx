@@ -54,25 +54,22 @@ import { useLocale } from "@/i18n/formatting-context";
 import { useAnalytics } from "@/lib/analytics/provider";
 import { authClient } from "@/lib/auth";
 import type { Role } from "@/lib/auth";
+import { roleOptions } from "@/lib/auth-queries";
 import { compareByLocale } from "@/lib/collation";
 import { toAuthClientError } from "@/lib/errors/auth";
 import { userErrorFromThrown } from "@/lib/errors/user-safe";
-import { ensureRouteQueryData } from "@/lib/react-query";
-import { roleOptions } from "@/routes/-queries";
-import {
-  getRoles,
-  rolePriority,
-} from "@/routes/_protected.organization/-consts";
+import { rolePriority, roleTranslationKeys } from "@/lib/organization/consts";
 import {
   useCancelInvitation,
   useInviteMember,
   useRemoveMember,
-} from "@/routes/_protected.organization/-mutations";
+} from "@/lib/organization/mutations";
 import {
   organizationKeys,
   organizationOptions,
-} from "@/routes/_protected.organization/-queries";
-import { formatDate } from "@/routes/_protected.organization/-utils";
+} from "@/lib/organization/queries";
+import { formatDate } from "@/lib/organization/utils";
+import { ensureRouteQueryData } from "@/lib/react-query";
 import { OrganizationJurisdictionsCard } from "@/routes/_protected.settings/-components/organization/jurisdictions-card";
 import { OrganizationListToolbar } from "@/routes/_protected.settings/-components/organization/list-toolbar";
 import { OrganizationProfileCard } from "@/routes/_protected.settings/-components/organization/profile-card";
@@ -486,7 +483,13 @@ const RoleCell = ({
     );
   }
 
-  const roleData = getRoles(t);
+  const roleData = roleTranslationKeys.map(
+    ({ descriptionKey, labelKey, value }) => ({
+      description: t(descriptionKey),
+      label: t(labelKey),
+      value,
+    }),
+  );
 
   const handleConfirm = async () => {
     if (pendingRole) {

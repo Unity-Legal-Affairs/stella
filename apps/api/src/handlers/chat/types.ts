@@ -7,55 +7,32 @@ import type {
   ChatBuiltinApprovalToolName,
   ChatTools,
 } from "@/api/handlers/chat/tools/chat-tools";
-import type { UserFileUrl } from "@/api/handlers/user-files/types";
+import type { AIErrorKind } from "@/api/lib/ai-error";
 import type { SafeId } from "@/api/lib/branded-types";
+import type { GeneratedDocumentActiveDraftContext } from "@/api/lib/chat/active-draft-context";
 import type {
   ChatClientToolsFor,
   ChatUIToolsFor,
 } from "@/api/lib/chat/chat-tool-types";
+import type { persistedChatMessageContentProof } from "@/api/lib/chat/persisted-message-content";
+import type { ChatMentionsData } from "@/api/lib/chat/references";
+import type { UserFileUrl } from "@/api/lib/user-files/types";
 
-export const CHAT_MENTION_CATEGORIES = ["entity", "workspace"] as const;
-
-export type ChatMentionCategory = (typeof CHAT_MENTION_CATEGORIES)[number];
-
-export type ChatMentionHrefPrefix = `#stella-${ChatMentionCategory}=`;
-
-export type ChatMentionHref = `${ChatMentionHrefPrefix}${string}`;
-
-export type ChatMentionHrefPrefixMap = {
-  [TCategory in ChatMentionCategory]: `#stella-${TCategory}=`;
-};
-
-export const CHAT_MENTION_HREF_PREFIXES = {
-  entity: "#stella-entity=",
-  workspace: "#stella-workspace=",
-} as const satisfies ChatMentionHrefPrefixMap;
-
-export const CHAT_REFERENCE_HREF_PREFIXES = {
-  ...CHAT_MENTION_HREF_PREFIXES,
-  decision: "#stella-decision=",
-} as const;
-
-export type ChatReferenceHrefPrefix =
-  (typeof CHAT_REFERENCE_HREF_PREFIXES)[keyof typeof CHAT_REFERENCE_HREF_PREFIXES];
-
-export type ChatReferenceCategory = keyof typeof CHAT_REFERENCE_HREF_PREFIXES;
-
-type BaseChatMention = {
-  id: string;
-  label: string;
-};
-
-export type ChatMention =
-  | (BaseChatMention & {
-      category: "entity";
-      workspaceId: string | null;
-    })
-  | (BaseChatMention & { category: "workspace" });
-
-export type ChatMentionsData = {
-  mentions: ChatMention[];
-};
+export {
+  CHAT_MENTION_CATEGORIES,
+  CHAT_MENTION_HREF_PREFIXES,
+  CHAT_REFERENCE_HREF_PREFIXES,
+} from "@/api/lib/chat/references";
+export type {
+  ChatMention,
+  ChatMentionCategory,
+  ChatMentionHref,
+  ChatMentionHrefPrefix,
+  ChatMentionHrefPrefixMap,
+  ChatMentionsData,
+  ChatReferenceCategory,
+  ChatReferenceHrefPrefix,
+} from "@/api/lib/chat/references";
 
 export type ChatUserFileUrl = UserFileUrl;
 
@@ -85,6 +62,7 @@ export type ChatAttachmentPart =
 
 export type ChatTanStackPart = MessagePart<ChatClientTools>;
 export type ChatPart = ChatTanStackPart;
+export type PersistableChatPartType = ChatTanStackPart["type"];
 
 export type ChatMessageUsage = Pick<
   TokenUsage,
@@ -98,7 +76,33 @@ export type ChatMessageUsage = Pick<
     | undefined;
 };
 
+/**
+ * Server-owned terminal state for one accepted assistant turn.
+ *
+ * Every newly generated assistant message carries exactly one branch. Older
+ * persisted messages predate this field and are treated as completed only when
+ * they contain user-visible content. Incoming clients can never set or replace
+ * this value; chat-schema restores it from the persisted server copy.
+ */
+export type ChatTurnOutcome =
+  | {
+      type: "awaiting-user";
+      interaction:
+        | { type: "approval"; toolCallId: string }
+        | { type: "ask-user"; toolCallId: string };
+    }
+  | { type: "completed" }
+  | { type: "cancelled"; reason: "superseded" | "user-stop" }
+  | { type: "failed"; error: AIErrorKind }
+  | {
+      type: "interrupted";
+      reason: "client-disconnected" | "timeout";
+    };
+
 export type ChatMessageMetadata = {
+  /** Server-owned generated-document draft binding. Incoming client metadata
+   * deliberately does not accept this field. */
+  activeDraftContext?: GeneratedDocumentActiveDraftContext | undefined;
   anonRestorations?: ChatAnonRestorationsData | undefined;
   docxEditPreferences?:
     | {
@@ -107,7 +111,20 @@ export type ChatMessageMetadata = {
       }
     | undefined;
   mentions?: ChatMentionsData | undefined;
+  /** Server-owned provenance. Incoming client metadata validation deliberately
+   *  does not accept this field. */
+  serverProvenance?:
+    | {
+        type: "search-summary";
+        version: 1;
+      }
+    | undefined;
+  /** Server-owned grounded documents. Incoming client metadata validation
+   * deliberately does not accept this field. */
   sourceDocuments?: ChatSourceDocument[] | undefined;
+  /** Server-owned terminal state. Incoming client metadata validation
+   * deliberately does not accept this field. */
+  turnOutcome?: ChatTurnOutcome | undefined;
   usage?: ChatMessageUsage | undefined;
 };
 
@@ -115,8 +132,29 @@ export type ChatMessage = UIMessage<ChatClientTools> & {
   metadata?: ChatMessageMetadata | undefined;
 };
 
-export type PersistableChatMessage = ChatMessage & {
+export type PersistableChatMessageCandidate = {
+  createdAt?: NonNullable<ChatMessage["createdAt"]>;
   id: SafeId<"chatMessage">;
+  metadata?: ChatMessageMetadata | undefined;
+  parts: ChatMessage["parts"];
+  role: ChatMessage["role"];
+};
+
+/** Opaque proof assigned only after every part passes the persistence policy. */
+declare const persistableChatMessageProof: unique symbol;
+export type PersistableChatMessage = {
+  createdAt?: NonNullable<ChatMessage["createdAt"]>;
+  id: SafeId<"chatMessage">;
+  metadata?: ChatMessageMetadata | undefined;
+  parts: ChatMessage["parts"];
+  readonly [persistableChatMessageProof]: true;
+  role: ChatMessage["role"];
+};
+
+/** Proof that an assistant message closes an accepted turn exactly once. */
+export type PersistableTerminalAssistantMessage = PersistableChatMessage & {
+  metadata: ChatMessageMetadata & { turnOutcome: ChatTurnOutcome };
+  role: "assistant";
 };
 
 export type ChatMessageRole = UIMessage["role"];
@@ -147,9 +185,16 @@ export type LegacyChatMessageContent = {
   data: unknown[];
 };
 
+export type ChatMessageContentCandidate = {
+  data: ChatMessage["parts"];
+  metadata?: ChatMessageMetadata | undefined;
+  version: 2;
+};
+
 export type ChatMessageContent = {
   data: ChatMessage["parts"];
   metadata?: ChatMessageMetadata | undefined;
+  readonly [persistedChatMessageContentProof]: true;
   version: 2;
 };
 

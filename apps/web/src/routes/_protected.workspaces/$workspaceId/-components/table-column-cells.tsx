@@ -13,7 +13,14 @@ import { useTranslations } from "use-intl";
 
 import { Button } from "@stll/ui/components/button";
 
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import Tooltip from "@/components/tooltip";
+import { EditableField } from "@/components/workspaces/editable-field";
+import {
+  type ColorVariants,
+  emptyColor,
+  resolveOptionColor,
+} from "@/components/workspaces/property-utils";
 import type { TranslationKey } from "@/i18n/types";
 import { detached } from "@/lib/detached";
 import type {
@@ -21,30 +28,23 @@ import type {
   WorkspaceField,
   WorkspaceProperty,
 } from "@/lib/types";
+import {
+  selectJustificationByFieldId,
+  useWorkspaceStore,
+} from "@/lib/workspaces/store";
 import { ActiveEditBadge } from "@/routes/_protected.workspaces/$workspaceId/-components/active-edit-badge";
 import { AICellSourceCard } from "@/routes/_protected.workspaces/$workspaceId/-components/ai-cell-source-card";
 import {
   CellMetadataFlags,
   useCellMetadataFlags,
 } from "@/routes/_protected.workspaces/$workspaceId/-components/cell-metadata-flags";
-import { EditableField } from "@/routes/_protected.workspaces/$workspaceId/-components/editable-field";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
 import {
   isAIExtractionProperty,
   resolveAiCellTargets,
   type AIExtractionTarget,
   type SourceFileTarget,
 } from "@/routes/_protected.workspaces/$workspaceId/-components/table-column.logic";
-import {
-  type ColorVariants,
-  emptyColor,
-  resolveOptionColor,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/utils";
 import { useRetryCell } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-retry-cell";
-import {
-  selectJustificationByFieldId,
-  useWorkspaceStore,
-} from "@/routes/_protected.workspaces/$workspaceId/-store";
 
 export const PropertyCell = ({
   entity,
@@ -235,7 +235,7 @@ export const PropertyCell = ({
           entity={entity}
           justification={justification}
           onOpen={() =>
-            useInspectorStore.getState().openFile({
+            useInspectorTabsStore.getState().openFile({
               id: targets.sourceFile.fieldId,
               entityId: entity.entityId,
               label: targets.sourceFile.label,
@@ -437,7 +437,11 @@ const resolveVerdictColor = (
   const optionColor = verdictProperty.content.options.find(
     (option) => option.value === tier,
   )?.color;
-  return optionColor ? resolveOptionColor(optionColor) : emptyColor;
+  // `OptionColor` widens to `string` (arbitrary hex); only `undefined` means
+  // the tier had no matching option, so check that explicitly.
+  return optionColor === undefined
+    ? emptyColor
+    : resolveOptionColor(optionColor);
 };
 
 type WithOpenEntityButtonProps = {
@@ -455,8 +459,8 @@ const WithOpenEntityButton = ({
 }: PropsWithChildren<WithOpenEntityButtonProps>) => {
   const t = useTranslations();
   const workspaceId = extraction.property.workspaceId;
-  const openFile = useInspectorStore((s) => s.openFile);
-  const isFileAlreadyOpen = useInspectorStore((s) =>
+  const openFile = useInspectorTabsStore((s) => s.openFile);
+  const isFileAlreadyOpen = useInspectorTabsStore((s) =>
     s.tabs.some((tab) => tab.type === "pdf" && tab.id === sourceFile.fieldId),
   );
   const retryCell = useRetryCell(workspaceId);

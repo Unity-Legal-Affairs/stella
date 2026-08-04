@@ -3,6 +3,7 @@ import { Result } from "better-result";
 import { createSafeRootHandler } from "@/api/lib/api-handlers";
 import type { HandlerConfig } from "@/api/lib/api-handlers";
 import {
+  getChatModeModelValue,
   getConfiguredChatModelOptions,
   getDefaultChatModelValue,
 } from "@/api/lib/chat-model-selection";
@@ -17,7 +18,7 @@ const config = {
 
 const getModelOptions = createSafeRootHandler(
   config,
-  // eslint-disable-next-line require-yield -- pure read with no Result.await calls
+  // eslint-disable-next-line require-yield, typescript/require-await -- safe handlers must remain async generators for Result.gen error capture.
   async function* ({ orgAIConfig, session }) {
     return Result.ok({
       options: getConfiguredChatModelOptions(orgAIConfig),
@@ -25,6 +26,18 @@ const getModelOptions = createSafeRootHandler(
         orgAIConfig,
         organizationId: session.activeOrganizationId,
       }),
+      modeValues: {
+        deepThinking: getChatModeModelValue({
+          orgAIConfig,
+          organizationId: session.activeOrganizationId,
+          role: "reasoning",
+        }),
+        fast: getChatModeModelValue({
+          orgAIConfig,
+          organizationId: session.activeOrganizationId,
+          role: "fast",
+        }),
+      },
     });
   },
 );

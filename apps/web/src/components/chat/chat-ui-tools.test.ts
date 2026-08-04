@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  consumeDocumentDeletionToolCalls,
+  getChatAssistantTurnError,
   getChatToolTitleKey,
   getApprovalToolName,
   getToolApprovalGrant,
@@ -13,16 +15,104 @@ import {
   isChatTurnInFlight,
   isExternalInputChatToolName,
   isPublicOfficialChatToolName,
+  isRunningToolPart,
   isToolApprovedByGrant,
   isUnresolvedFolioAgentDocToolCallPart,
+  resolveChatAssistantTurnOutcome,
   sanitizeRunningToolCalls,
   selectUnresolvedFolioAgentDocToolCallParts,
   withParsedToolCallInputs,
 } from "@/components/chat/chat-ui-tools";
 import type {
+  ChatMessage,
   ChatPart,
+  DocumentDeletionMessage,
   PersistedChatMessage,
 } from "@/components/chat/chat-ui-tools";
+
+describe("assistant turn outcomes", () => {
+  test("resolves server-owned failures for reload error rendering", () => {
+    const failed = {
+      id: "assistant-failed",
+      metadata: {
+        turnOutcome: { type: "failed", error: "provider_unavailable" },
+      },
+      parts: [{ type: "text", content: "Partial answer" }],
+      role: "assistant",
+    } satisfies ChatMessage;
+
+    expect(resolveChatAssistantTurnOutcome(failed)).toEqual({
+      type: "failed",
+      error: "provider_unavailable",
+    });
+    expect(getChatAssistantTurnError(failed)?.message).toBe(
+      "provider_unavailable",
+    );
+  });
+
+  test("does not invent completion for an empty legacy assistant turn", () => {
+    const emptyLegacy = {
+      id: "assistant-empty",
+      parts: [],
+      role: "assistant",
+    } satisfies ChatMessage;
+    const nonEmptyLegacy = {
+      ...emptyLegacy,
+      parts: [{ type: "text", content: "Legacy answer" }],
+    } satisfies ChatMessage;
+
+    expect(resolveChatAssistantTurnOutcome(emptyLegacy)).toEqual({
+      type: "incomplete",
+    });
+    expect(resolveChatAssistantTurnOutcome(nonEmptyLegacy)).toEqual({
+      type: "legacy-completed",
+    });
+  });
+
+  test("does not turn a persisted human interaction into an error", () => {
+    const awaitingUser = {
+      id: "assistant-awaiting-user",
+      metadata: {
+        turnOutcome: {
+          type: "awaiting-user",
+          interaction: { type: "ask-user", toolCallId: "ask-1" },
+        },
+      },
+      parts: [
+        {
+          type: "tool-call",
+          id: "ask-1",
+          name: "ask-user",
+          state: "input-complete",
+          arguments: "{}",
+        },
+      ],
+      role: "assistant",
+    } satisfies ChatMessage;
+
+    expect(resolveChatAssistantTurnOutcome(awaitingUser)).toMatchObject({
+      type: "awaiting-user",
+    });
+    expect(getChatAssistantTurnError(awaitingUser)).toBeUndefined();
+  });
+
+  test("does not turn a persisted cancellation into an error", () => {
+    const cancelled = {
+      id: "assistant-cancelled",
+      metadata: {
+        turnOutcome: { type: "cancelled", reason: "user-stop" },
+      },
+      parts: [{ type: "text", content: "Partial answer" }],
+      role: "assistant",
+    } satisfies ChatMessage;
+
+    expect(resolveChatAssistantTurnOutcome(cancelled)).toEqual({
+      type: "cancelled",
+      reason: "user-stop",
+    });
+    expect(getChatAssistantTurnError(cancelled)).toBeUndefined();
+  });
+});
 
 describe("chat tool titles", () => {
   test("maps stella API tools to translation keys", () => {
@@ -69,6 +159,114 @@ describe("chat tool titles", () => {
 
   test("uses the translated unknown fallback for unknown tools", () => {
     expect(getChatToolTitleKey("searchCaseLaw")).toBe("chat.tool.unknown");
+  });
+});
+
+describe("consumeDocumentDeletionToolCalls", () => {
+  test("consumes a completed whole-document deletion once", () => {
+    const messages: DocumentDeletionMessage[] = [
+      {
+        id: "message-1",
+        parts: [
+          {
+            arguments: JSON.stringify({ entity_id: "entity_ref_1" }),
+            id: "tool-call-1",
+            input: { entity_id: "entity_ref_1" },
+            name: "delete_document",
+            output: { deleted: true },
+            state: "complete",
+            type: "tool-call",
+          },
+        ],
+        role: "assistant",
+      },
+    ];
+    const handledToolCallIds = new Set<string>();
+
+    expect(
+      consumeDocumentDeletionToolCalls({
+        handledToolCallIds,
+        messages,
+      }),
+    ).toEqual({
+      hasVersionDeletion: false,
+      hasWholeDocumentDeletion: true,
+    });
+    expect(
+      consumeDocumentDeletionToolCalls({
+        handledToolCallIds,
+        messages,
+      }),
+    ).toEqual({
+      hasVersionDeletion: false,
+      hasWholeDocumentDeletion: false,
+    });
+  });
+
+  test("reports completed version-only deletions for cache revalidation", () => {
+    const messages: DocumentDeletionMessage[] = [
+      {
+        id: "message-1",
+        parts: [
+          {
+            arguments: JSON.stringify({
+              entity_id: "entity_ref_1",
+              version_id: "version-1",
+            }),
+            id: "tool-call-1",
+            input: {
+              entity_id: "entity_ref_1",
+              version_id: "version-1",
+            },
+            name: "delete_document",
+            output: { deleted: true },
+            state: "complete",
+            type: "tool-call",
+          },
+        ],
+        role: "assistant",
+      },
+    ];
+
+    expect(
+      consumeDocumentDeletionToolCalls({
+        handledToolCallIds: new Set(),
+        messages,
+      }),
+    ).toEqual({
+      hasVersionDeletion: true,
+      hasWholeDocumentDeletion: false,
+    });
+  });
+
+  test("ignores completed calls without a successful deletion result", () => {
+    const messages: DocumentDeletionMessage[] = [
+      {
+        id: "message-1",
+        parts: [
+          {
+            arguments: JSON.stringify({ entity_id: "entity_ref_1" }),
+            id: "tool-call-1",
+            input: { entity_id: "entity_ref_1" },
+            name: "delete_document",
+            output: { deleted: false },
+            state: "complete",
+            type: "tool-call",
+          },
+        ],
+        role: "assistant",
+      },
+    ];
+
+    expect(
+      consumeDocumentDeletionToolCalls({
+        handledToolCallIds: new Set(),
+        messages,
+      }),
+    ).toEqual({
+      hasVersionDeletion: false,
+      hasWholeDocumentDeletion: false,
+    });
   });
 });
 
@@ -369,7 +567,7 @@ describe("hasRunningToolCallInLatestAssistantMessage", () => {
     );
   });
 
-  test("ignores create-document prompts waiting for a matter selection", () => {
+  test("keeps the turn running until a create-document draft is settled", () => {
     const messages = [
       {
         id: "message-1",
@@ -395,9 +593,7 @@ describe("hasRunningToolCallInLatestAssistantMessage", () => {
       typeof hasRunningToolCallInLatestAssistantMessage
     >[0]["messages"];
 
-    expect(hasRunningToolCallInLatestAssistantMessage({ messages })).toBe(
-      false,
-    );
+    expect(hasRunningToolCallInLatestAssistantMessage({ messages })).toBe(true);
   });
 
   test("ignores stale running tool parts from older messages", () => {
@@ -688,6 +884,43 @@ describe("isChatTurnInFlight", () => {
   });
 });
 
+describe("isRunningToolPart", () => {
+  test("classifies every TanStack tool-call state", () => {
+    const expectedByState = {
+      "awaiting-input": true,
+      "approval-requested": false,
+      "approval-responded": false,
+      complete: false,
+      error: false,
+      "input-complete": true,
+      "input-streaming": true,
+    } as const satisfies Record<
+      Extract<ChatPart, { type: "tool-call" }>["state"],
+      boolean
+    >;
+
+    for (const [state, expected] of Object.entries(expectedByState)) {
+      expect(
+        isRunningToolPart({
+          name: "web_search",
+          state,
+          type: "tool-call",
+        }),
+      ).toBe(expected);
+    }
+  });
+
+  test("rejects unknown runtime states", () => {
+    expect(
+      isRunningToolPart({
+        name: "web_search",
+        state: "future-sdk-state",
+        type: "tool-call",
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("sanitizeRunningToolCalls", () => {
   const runningToolPart = {
     arguments: JSON.stringify({ query: "consumer credit" }),
@@ -759,6 +992,66 @@ describe("sanitizeRunningToolCalls", () => {
     expect(sanitizeRunningToolCalls(messages)[0]).toBe(messages[0]);
   });
 
+  test("leaves a resumable create-document draft untouched", () => {
+    const messages: PersistedChatMessage[] = [
+      {
+        id: "message-1",
+        parts: [
+          {
+            arguments: JSON.stringify({
+              name: "Engagement letter",
+              source: "@title Engagement letter",
+            }),
+            id: "tool-call-1",
+            input: {
+              name: "Engagement letter",
+              source: "@title Engagement letter",
+            },
+            name: "create-document",
+            state: "input-complete",
+            type: "tool-call",
+          } satisfies ChatPart,
+        ],
+        role: "assistant",
+      },
+    ];
+
+    expect(sanitizeRunningToolCalls(messages)[0]).toBe(messages[0]);
+    expect(isChatTurnInFlight({ status: "ready", messages })).toBe(true);
+  });
+
+  test("terminates a complete create-document input when the user cancels", () => {
+    const messages: PersistedChatMessage[] = [
+      {
+        id: "message-1",
+        parts: [
+          {
+            arguments: JSON.stringify({
+              name: "Engagement letter",
+              source: "@title Engagement letter",
+            }),
+            id: "tool-call-1",
+            input: {
+              name: "Engagement letter",
+              source: "@title Engagement letter",
+            },
+            name: "create-document",
+            state: "input-complete",
+            type: "tool-call",
+          } satisfies ChatPart,
+        ],
+        role: "assistant",
+      },
+    ];
+
+    const sanitized = sanitizeRunningToolCalls(messages, "cancel");
+    const part = sanitized[0]?.parts[0];
+    if (part?.type !== "tool-call") {
+      throw new Error("Expected a tool-call part");
+    }
+    expect(part.state).toBe("error");
+  });
+
   test("leaves an approval-requested tool call untouched", () => {
     const messages: PersistedChatMessage[] = [
       {
@@ -780,6 +1073,36 @@ describe("sanitizeRunningToolCalls", () => {
 
     expect(sanitizeRunningToolCalls(messages)[0]).toBe(messages[0]);
   });
+
+  test.each(["", "   \n\t"])(
+    "terminalizes a create-document draft with non-resumable source %j",
+    (source) => {
+      const messages: PersistedChatMessage[] = [
+        {
+          id: "message-1",
+          parts: [
+            {
+              arguments: JSON.stringify({ name: "Empty draft", source }),
+              id: "tool-call-1",
+              input: { name: "Empty draft", source },
+              name: "create-document",
+              state: "input-complete",
+              type: "tool-call",
+            } satisfies ChatPart,
+          ],
+          role: "assistant",
+        },
+      ];
+
+      const part = sanitizeRunningToolCalls(messages)[0]?.parts[0];
+      expect(part).toMatchObject({ state: "error", type: "tool-call" });
+      expect(
+        hasRunningToolCallInLatestAssistantMessage({
+          messages: sanitizeRunningToolCalls(messages),
+        }),
+      ).toBe(false);
+    },
+  );
 
   test("leaves a completed tool call untouched", () => {
     const messages: PersistedChatMessage[] = [

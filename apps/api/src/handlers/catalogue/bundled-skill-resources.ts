@@ -11,11 +11,10 @@ import {
 
 import { HandlerError } from "@/api/lib/errors/tagged-errors";
 import { LIMITS } from "@/api/lib/limits";
-
 import type {
   ParsedSkillPackage,
   ParsedSkillResource,
-} from "../skills/skill-package";
+} from "@/api/lib/skills/skill-package";
 
 type PersistedSkillResourceKind = ParsedSkillResource["kind"];
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/u;
@@ -106,6 +105,10 @@ export const toParsedBundledSkillPackage = ({
           source,
         }),
         description: parsed.metadata.description,
+        entrypointHash: hashBundledSkillPackage({
+          resources: [],
+          source,
+        }),
         license: parsed.metadata.license ?? null,
         metadata: parsed.metadata.metadata ?? {},
         name: parsed.metadata.name,

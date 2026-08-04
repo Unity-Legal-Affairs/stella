@@ -54,9 +54,17 @@ const makeDocxBytes = async () => {
 
 const s3ArrayBufferMock = mock(async () => await makeDocxBytes());
 const s3FileMock = mock(() => ({ arrayBuffer: s3ArrayBufferMock }));
+const s3DeleteMock = mock(async () => undefined);
+const s3WriteMock = mock(async () => undefined);
 
 void mock.module("@/api/lib/s3", () => ({
+  deleteS3ObjectWithSignal: s3DeleteMock,
   getS3: () => ({ file: s3FileMock }),
+  putS3ObjectWithSignal: s3WriteMock,
+  resolveS3Credentials: async () => ({
+    accessKeyId: "test-access-key",
+    secretAccessKey: "test-secret-key",
+  }),
 }));
 
 // Default passthrough: just await the wrapped operation, so every existing
@@ -242,7 +250,7 @@ void mock.module("@/api/handlers/workspaces/workspace-contacts-read", () => ({
 
 const {
   getMcpToolDefinition,
-  getMcpToolScopeHint,
+  getMcpToolRequiredScopesHint,
   handleMcpToolCall,
   listMcpTools,
 } = await import("@/api/mcp/tools");
@@ -693,14 +701,22 @@ describe("OpenAI-compatible MCP tools", () => {
   });
 
   test("hints dynamic tool scopes from names before resolving definitions", () => {
-    expect(getMcpToolScopeHint("search_case_law")).toBe("stella:search");
-    expect(getMcpToolScopeHint("mcp__registry__lookup")).toBe(
+    expect(getMcpToolRequiredScopesHint("search_case_law")).toEqual([
+      "stella:search",
+    ]);
+    expect(getMcpToolRequiredScopesHint("save_filled_template")).toEqual([
+      "stella:documents_write",
+      "stella:templates",
+    ]);
+    expect(getMcpToolRequiredScopesHint("mcp__registry__lookup")).toEqual([
       "stella:external_mcps",
-    );
-    expect(getMcpToolScopeHint("skill__research")).toBe("stella:skills");
-    expect(getMcpToolScopeHint("mcp__registry__lookup", "anonymized")).toBe(
-      undefined,
-    );
+    ]);
+    expect(getMcpToolRequiredScopesHint("skill__research")).toEqual([
+      "stella:skills",
+    ]);
+    expect(
+      getMcpToolRequiredScopesHint("mcp__registry__lookup", "anonymized"),
+    ).toBe(undefined);
   });
 
   test("does not resolve dynamic definitions for unprefixed unknown tools", async () => {

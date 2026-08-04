@@ -1,86 +1,102 @@
-# Create Plan
+# Plan
 
-Create a new plan file in `.agents/plans/` for a feature or task.
+Create an implementation plan only when the user explicitly requests one. A
+plan records decisions and executable slices; it is not a substitute for
+inspecting the repository.
 
-## Arguments
+## 1. Establish the Planning Context
 
-$ARGUMENTS — A short slug for the plan (kebab-case), e.g. "full-text-search"
-or "matter-lifecycle". If empty, determine an appropriate slug from
-the conversation context.
+Read applicable repository instructions and the existing planning system.
+Prefer the repository's established location and format. When present, inspect:
 
-## Instructions
+- `.agents/ARCHITECTURE.md`
+- `.agents/GOALS.md`
+- `.agents/STATUS.md`
+- recent related plans
+- the code, tests, schemas, and configuration the task would change
 
-1. **Read context** — read `.agents/ARCHITECTURE.md` and `.agents/GOALS.md`
-   to understand the current system and priorities.
+Use `$ARGUMENTS` as a short slug when provided; otherwise derive one from the
+task.
 
-2. **Determine the next plan number** — list existing plans and increment:
+Do not create a second planning system. Use `.agents/plans/` only when it is
+already established or the repository clearly adopts the shared convention.
+If no planning area exists and the repository does not adopt this convention,
+ask the user where to save the plan before creating a new directory.
 
-   ```bash
-   ls .agents/plans/
-   ```
+## 2. Resolve Decisions With Evidence
 
-   Use the next sequential number (e.g., if `001-matters.md` exists,
-   use `002`).
+Trace the current behavior through real entry points and boundaries. Record
+facts separately from proposals. Ask about a materially different product,
+security, migration, or compatibility choice only when repository evidence
+cannot resolve it. Do not pause for discoverable implementation details.
 
-3. **Research the feature** — before writing the plan, explore the
-   codebase to understand what exists, what needs to change, and what
-   the implications are. Read relevant handler files, schema, routes,
-   and components.
+Prefer vertical slices that leave the repository working after each slice when
+the implementation shape is sufficiently settled. Otherwise plan outcomes and
+contracts without inventing files or symbols. Identify ownership boundaries,
+data contracts, invalid states, rollout risks, and generated artifacts
+explicitly.
 
-4. **Write the plan** to `.agents/plans/{number}-{slug}.md` with this
-   structure:
+## 3. Create a Collision-Safe File
 
-   ```markdown
-   # Plan: [Feature Name]
+Follow the repository's existing naming scheme when one exists and is safe for
+concurrent worktrees. Otherwise use:
 
-   Date: YYYY-MM-DD
+```text
+YYYYMMDD-HHMMSS-<slug>-<short-unique-suffix>.md
+```
 
-   ## Goal
+Use UTC for the timestamp. Create the file exclusively and retry with a new
+suffix on collision. Never overwrite an existing plan. Do not derive a global
+sequential number from a directory listing: concurrent worktrees can choose the
+same number.
 
-   What are we building and why? 1-3 sentences.
+## 4. Write the Plan
 
-   ## Design Decisions
+Use only sections that carry information:
 
-   Key choices and why we made them. Focus on _what_ and _why_,
-   not prescriptive implementation details.
+```markdown
+# Plan: [Feature]
 
-   - **Decision 1**: Why this approach over alternatives.
-   - **Decision 2**: Why this approach over alternatives.
+## Goal
 
-   ## Scope
+What outcome changes, for whom, and why.
 
-   **In scope:**
+## Current State
 
-   - ...
+Relevant behavior, entry points, constraints, and evidence.
 
-   **Out of scope:**
+## Decisions
 
-   - ...
+- **Decision**: choice, alternatives considered, and why they were rejected.
 
-   ## Implementation
+## Scope
 
-   Where the code lives and what changes. Be specific about files.
+In scope and intentionally out of scope.
 
-   - `apps/api/src/...` — what changes here
-   - `apps/web/src/...` — what changes here
-   - DB schema changes (if any)
+## Vertical Slices
 
-   ## Test Cases
+1. End-to-end slice with real files, boundaries, and a verifiable outcome.
 
-   What needs to be tested.
+## Contracts and Invariants
 
-   ## Open Questions
+Types, schemas, authorization, compatibility, idempotency, and failure behavior.
 
-   Unresolved decisions (remove section when all resolved).
-   ```
+## Verification
 
-5. **Plan guidelines**:
-   - Focus on _what_ and _why_, avoid prescriptive _how_
-   - Consider both API layers: backend handlers and frontend routes
-   - Note DB schema changes explicitly — they affect migrations
-   - Flag security implications (ethical walls, workspace isolation,
-     auth) per the security audit checklist
-   - Keep it concise — a plan is a thinking tool, not documentation
+Focused checks, integration coverage, and observable acceptance criteria.
 
-6. **Confirm with the user** — show the plan and ask if they want to
-   adjust anything before saving.
+## Rollout and Recovery
+
+Migration, sequencing, monitoring, rollback, or "Not applicable".
+
+## Open Questions
+
+Only unresolved decisions that can change the plan.
+```
+
+Name concrete files and symbols only where repository evidence and settled
+implementation decisions support them. Avoid pseudocode unless a contract would
+otherwise remain ambiguous. Keep the plan concise enough to stay useful during
+implementation.
+
+Report the created path and any decision that still needs the user.

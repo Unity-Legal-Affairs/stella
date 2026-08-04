@@ -57,9 +57,59 @@ export type NetworkCapture = {
 
 export type NetworkCollector = {
   trackPage: (page: Page) => () => void;
+  // Waits until tracked API activity has been quiet for the requested window.
+  // Long-lived SSE streams do not block this: only their request/response
+  // events count as activity, not the open connection itself.
+  waitForQuiet: (options: NetworkQuietOptions) => Promise<"idle" | "timeout">;
   // Async: waits for in-flight response-body reads so response sizes are
   // populated before the caller summarizes the capture.
   capture: () => Promise<NetworkCapture>;
+};
+
+export type NetworkQuietOptions = {
+  idleMs: number;
+  minimumObservationMs: number;
+  timeoutMs: number;
+};
+
+type WaitForQuietPeriodOptions = NetworkQuietOptions & {
+  getLastActivityAt: () => number;
+  now?: () => number;
+  sleep?: (durationMs: number) => Promise<void>;
+};
+
+// Kept independent of Playwright so the timing state machine can be exercised
+// deterministically with a fake clock. The timeout is a cap, matching the old
+// settle window; reaching it allows capture instead of hanging on polling.
+export const waitForQuietPeriod = async ({
+  getLastActivityAt,
+  idleMs,
+  minimumObservationMs,
+  timeoutMs,
+  now = Date.now,
+  sleep = async (durationMs) =>
+    new Promise((resolve) => {
+      setTimeout(resolve, durationMs);
+    }),
+}: WaitForQuietPeriodOptions): Promise<"idle" | "timeout"> => {
+  const startedAt = now();
+  const timeoutAt = startedAt + timeoutMs;
+
+  while (true) {
+    const current = now();
+    const idleAt = Math.max(
+      startedAt + minimumObservationMs,
+      Math.max(startedAt, getLastActivityAt()) + idleMs,
+    );
+    if (current >= idleAt) {
+      return "idle";
+    }
+    if (current >= timeoutAt) {
+      return "timeout";
+    }
+    // eslint-disable-next-line no-await-in-loop -- each wait observes activity that may have arrived during the preceding wait; parallel sleeps cannot model a quiet period
+    await sleep(Math.min(idleAt, timeoutAt) - current);
+  }
 };
 
 type NetworkCollectorOptions = {
@@ -112,14 +162,20 @@ const readResponseBytes = async (
 };
 
 export const createNetworkCollector = (
-  options: NetworkCollectorOptions = {},
+  collectorOptions: NetworkCollectorOptions = {},
 ): NetworkCollector => {
-  const apiOrigin = options.apiOrigin ?? new URL(DEFAULT_API_URL).origin;
+  const apiOrigin =
+    collectorOptions.apiOrigin ?? new URL(DEFAULT_API_URL).origin;
   const records: NetworkRecord[] = [];
   const byRequest = new Map<Request, NetworkRecord>();
   // Body reads are async (Playwright must finish downloading the response),
   // so capture() awaits these before reading responseBytes off the records.
   const pendingBodyReads: Promise<void>[] = [];
+  let lastActivityAt = Date.now();
+
+  const markActivity = () => {
+    lastActivityAt = Date.now();
+  };
 
   return {
     trackPage: (page) => {
@@ -139,12 +195,14 @@ export const createNetworkCollector = (
         };
         records.push(record);
         byRequest.set(request, record);
+        markActivity();
       };
 
       const onSettled = (request: Request) => {
         const record = byRequest.get(request);
         if (record) {
           record.end = Date.now();
+          markActivity();
         }
       };
 
@@ -153,6 +211,7 @@ export const createNetworkCollector = (
         if (!record) {
           return;
         }
+        markActivity();
         const header = response.headers()[DB_QUERIES_HEADER];
         if (header !== undefined) {
           record.dbQueries = Number(header);
@@ -178,6 +237,12 @@ export const createNetworkCollector = (
         page.off("requestfailed", onSettled);
       };
     },
+
+    waitForQuiet: async (quietOptions) =>
+      waitForQuietPeriod({
+        ...quietOptions,
+        getLastActivityAt: () => lastActivityAt,
+      }),
 
     capture: async () => {
       await Promise.all(pendingBodyReads);
@@ -230,39 +295,43 @@ export const requestKey = ({
   pathname: string;
 }): string => `${method} ${normalizeApiPath(pathname)}`;
 
-// A dependency edge exists only when the next request starts PROMPTLY after
-// the previous response: real render-fetch waterfalls dispatch the next call
-// within milliseconds of the response that unblocked them. Without this cap,
-// an independent idle prefetch firing a second later would coincidentally
-// "chain" after whatever happened to finish before it, making the depth vary
-// with machine load instead of app structure.
-const CHAIN_GAP_MS = 500;
+// A request launched after this quiet gap starts a new observation sequence,
+// not another route-load round. This excludes idle prefetches from the route's
+// longest contiguous request sequence.
+const REQUEST_SEQUENCE_GAP_MS = 500;
 
-// Longest chain r1..rn where each next request starts after the previous one
-// ended, within CHAIN_GAP_MS: the number of causally sequential request
-// rounds, i.e. how many times the browser had to wait for a response before
-// it could fire the next call. Sorted by start with an O(n^2) longest-chain
-// DP; n is a handful of requests per route.
+// Longest sequence of non-overlapping request waves. A new round starts only
+// after every request in the current wave has completed. This deliberately
+// computes a lower bound: a request that depends on a fast response can be
+// hidden by an unrelated slow response, but runner load cannot serialize
+// independent completions into a false waterfall. Lengthening any response can
+// only merge rounds, never deepen them.
 export const waterfallDepth = (
   intervals: { start: number; end: number }[],
 ): number => {
-  const sorted = intervals
-    .map((interval) => ({ ...interval, depth: 1 }))
-    .sort((a, b) => a.start - b.start);
+  const sorted = intervals.toSorted((a, b) => a.start - b.start);
+  const first = sorted.at(0);
+  if (first === undefined) {
+    return 0;
+  }
 
-  let best = 0;
-  for (const [index, current] of sorted.entries()) {
-    for (let prevIndex = 0; prevIndex < index; prevIndex++) {
-      const prev = sorted[prevIndex];
-      if (
-        prev !== undefined &&
-        current.start >= prev.end &&
-        current.start - prev.end <= CHAIN_GAP_MS
-      ) {
-        current.depth = Math.max(current.depth, prev.depth + 1);
-      }
+  let best = 1;
+  let currentDepth = 1;
+  let waveEndsAt = first.end;
+
+  for (const interval of sorted.slice(1)) {
+    if (interval.start < waveEndsAt) {
+      waveEndsAt = Math.max(waveEndsAt, interval.end);
+      continue;
     }
-    best = Math.max(best, current.depth);
+
+    if (interval.start - waveEndsAt > REQUEST_SEQUENCE_GAP_MS) {
+      currentDepth = 1;
+    } else {
+      currentDepth += 1;
+    }
+    waveEndsAt = interval.end;
+    best = Math.max(best, currentDepth);
   }
   return best;
 };
@@ -362,6 +431,10 @@ export type NetworkBaselineDiff = {
   notices: string[];
 };
 
+type DiffNetworkBaselineOptions = {
+  requireAllRoutes?: boolean;
+};
+
 const pushNewRequestProblems = ({
   route,
   entry,
@@ -388,11 +461,9 @@ const pushNewRequestProblems = ({
   );
 };
 
-// Under load, independent PARALLEL requests can serialize just enough to land
-// inside CHAIN_GAP_MS and bump the measured depth by one with no change to
-// the request manifest (a quiet CI runner rarely reproduces this; a busy dev
-// machine does). Mirrors dbQueryAllowance's role: tolerate one level of
-// measurement jitter before treating a depth increase as a real regression.
+// Browser scheduling can still split one logical wave at its boundary. Keep a
+// bounded +1 allowance; the wave calculation itself is monotonic under slower
+// responses, so load cannot accumulate arbitrary false depth.
 const DEPTH_JITTER_ALLOWANCE = 1;
 
 const pushWaterfallDepthProblems = ({
@@ -410,7 +481,7 @@ const pushWaterfallDepthProblems = ({
     return;
   }
   problems.push(
-    `Request waterfall got deeper on ${route}: ${entry.depth} -> ${metrics.depth} (already tolerating +${DEPTH_JITTER_ALLOWANCE} for parallel-request jitter)\n` +
+    `Request waterfall got deeper on ${route}: ${entry.depth} -> ${metrics.depth} (already tolerating +${DEPTH_JITTER_ALLOWANCE} for wave-boundary jitter)\n` +
       `  Each extra level is one more sequential network round the user waits\n` +
       `  through before the page can finish. Usually the fix is to start the\n` +
       `  query in the route loader (ensureRouteQueryData / prefetchRouteQuery in\n` +
@@ -600,6 +671,7 @@ const requestCountBudget = (
 export const diffNetworkBaseline = (
   baseline: NetworkBaseline | null,
   results: Map<string, RouteNetworkMetrics>,
+  { requireAllRoutes = true }: DiffNetworkBaselineOptions = {},
 ): NetworkBaselineDiff => {
   const problems: string[] = [];
   const notices: string[] = [];
@@ -636,13 +708,15 @@ export const diffNetworkBaseline = (
     pushImprovementNotices({ route, entry, metrics, notices });
   }
 
-  for (const route of Object.keys(baseline)) {
-    if (!results.has(route)) {
-      problems.push(
-        `Stale network baseline entry (route not visited this run): ${route}\n` +
-          `  The smoke route set is deterministic, so a baseline route that never\n` +
-          `  ran means the route was renamed or removed — prune it: ${WRITE_HINT}.`,
-      );
+  if (requireAllRoutes) {
+    for (const route of Object.keys(baseline)) {
+      if (!results.has(route)) {
+        problems.push(
+          `Stale network baseline entry (route not visited this run): ${route}\n` +
+            `  The smoke route set is deterministic, so a baseline route that never\n` +
+            `  ran means the route was renamed or removed — prune it: ${WRITE_HINT}.`,
+        );
+      }
     }
   }
 
@@ -767,6 +841,7 @@ const writeNetworkBaseline = (baseline: NetworkBaseline) => {
 
 export const assertNetworkBaseline = (
   results: Map<string, RouteNetworkMetrics>,
+  options: DiffNetworkBaselineOptions = {},
 ) => {
   const mode = process.env["E2E_NETWORK_BASELINE"];
 
@@ -790,6 +865,7 @@ export const assertNetworkBaseline = (
   const { problems, notices } = diffNetworkBaseline(
     readNetworkBaseline(),
     results,
+    options,
   );
 
   for (const notice of notices) {
@@ -802,4 +878,12 @@ export const assertNetworkBaseline = (
       ? "network baseline"
       : `Network baseline check failed:\n\n${problems.join("\n\n")}`,
   ).toEqual([]);
+};
+
+export const assertNetworkBaselineCoverage = (expectedRoutes: string[]) => {
+  const baseline = readNetworkBaseline();
+  expect(
+    baseline === null ? [] : Object.keys(baseline).sort(),
+    `network baseline route keys in ${BASELINE_RELATIVE}`,
+  ).toEqual(expectedRoutes.toSorted());
 };

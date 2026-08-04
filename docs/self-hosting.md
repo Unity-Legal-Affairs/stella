@@ -5,11 +5,12 @@ and infrastructure.
 
 ## Overview
 
-The repository includes a production-oriented Compose file for the stella API
-and [Gotenberg](https://gotenberg.dev/), which stella uses for document
-conversion. Supporting services are intentionally not bundled into that file:
-bring your own Postgres, Redis-compatible cache, and S3-compatible object
-storage, then point stella at them with environment variables.
+The repository includes a production-oriented Compose file for the stella API,
+its document-processing worker, and
+[Gotenberg](https://gotenberg.dev/), which stella uses for document conversion.
+Supporting services are intentionally not bundled into that file: bring your
+own Postgres, Redis-compatible cache, and S3-compatible object storage, then
+point stella at them with environment variables.
 
 This keeps the application container simple while letting operators use managed
 services, existing self-hosted services, or a platform such as
@@ -18,10 +19,10 @@ services, existing self-hosted services, or a platform such as
 to deploy common dependencies such as Postgres, Valkey or Redis, and MinIO.
 For Railway, see the dedicated [Railway deployment guide](./railway.md).
 
-Deploy the API and Gotenberg with `docker-compose.selfhost.yml` (see below).
-Deploy the web app as its own long-running server process. The web app is a
-TanStack Start SSR app, so serving `apps/web/dist` as static files is not
-enough.
+Deploy the API, document-processing worker, and Gotenberg with
+`docker-compose.selfhost.yml` (see below). Deploy the web app as its own
+long-running server process. The web app is a TanStack Start SSR app, so
+serving `apps/web/dist` as static files is not enough.
 
 ```bash
 cp apps/web/.env.example apps/web/.env
@@ -98,6 +99,8 @@ docker run --detach \
 - S3-compatible object storage for files. AWS S3, Cloudflare R2, and MinIO work.
 - Gotenberg for document conversion. The Compose file runs this next to the API
   on the private Docker Compose network.
+- An HTTPS PaddleOCR-compatible service is optional. Configure it only when
+  organizations should be able to turn scanned PDFs into searchable text.
 
 For Postgres, Redis/Valkey, and object storage, any self-hosted instance works
 as long as the API container can reach it. Put the service URLs and credentials
@@ -136,6 +139,12 @@ TRANSACTIONAL_EMAIL_FROM="noreply@example.com"
 GOTENBERG_URL="http://gotenberg:3000"
 GOTENBERG_USERNAME="replace-with-a-username"
 GOTENBERG_PASSWORD="replace-with-a-password"
+# Optional: enable searchable-text extraction for scanned PDFs. If the service
+# requires a bearer token, generate one with at least 16 characters.
+# OCR_SERVICE_URL="https://ocr.example.internal"
+# OCR_SERVICE_TOKEN=""
+# Release queued OCR requests at this interval. Defaults to 1440 minutes.
+DOCUMENT_OCR_BATCH_INTERVAL_MINUTES="1440"
 # Optional: enable desktop edit session endpoints.
 FEATURE_DESKTOP_EDITING="true"
 ```
@@ -154,6 +163,23 @@ Do not expose Gotenberg to the public internet. Gotenberg's installation guide
 recommends treating it like a database: keep it behind your firewall. The
 self-host Compose file intentionally does not publish a `ports` entry for the
 Gotenberg service.
+
+The Compose file also starts the scheduler and document-processing worker from
+the API image. The worker stays idle when no OCR work is queued. The scheduler
+releases queued requests every `DOCUMENT_OCR_BATCH_INTERVAL_MINUTES` (minimum
+5, maximum 10080).
+To enable OCR, deploy a PaddleOCR-compatible service separately and set
+`OCR_SERVICE_URL`; non-loopback endpoints must use HTTPS because requests carry
+short-lived access credentials.
+The original PDF remains unchanged: stella stores and indexes only the derived
+searchable text.
+
+OCR does not change the standard self-host architecture requirements. Operators
+who explicitly opt in on an amd64 NVIDIA host can add the optional
+`docker-compose.ocr.yml` overlay; it builds the included OCR service and keeps
+it private on the worker's loopback network. See
+[the OCR service guide](../apps/ocr-service/README.md) for the command and host
+requirements.
 
 ## Desktop editing
 
@@ -193,8 +219,8 @@ source checkout after `bun --filter @stll/web build`.
 
 From the repository root, pass `--env-file apps/api/.env` so Compose can read
 the API environment. The API service also reads `apps/api/.env` by default.
-This Compose file starts the API and Gotenberg only; run the web SSR server
-separately as described above.
+This Compose file starts the API, document-processing worker, and Gotenberg;
+run the web SSR server separately as described above.
 
 ```bash
 docker compose --env-file apps/api/.env -f docker-compose.selfhost.yml up -d --build
@@ -278,6 +304,32 @@ Example:
 curl -H "Authorization: Bearer $OPERATOR_METRICS_TOKEN" \
   "https://api.stella.example.com/operator/registrations?since=2026-07-01T00:00:00Z"
 ```
+
+## Security canary
+
+Operators can plant a decoy Stella machine API key in an infrastructure honey
+resource. The API stores only its SHA-256 digest. If any request presents the
+decoy, Stella stops it before authentication, emits an ERROR log named
+`security.canary_triggered`, and returns a 403 response with the warning in both
+the JSON body and `x-stella-agent-warning` header. Repeated events are
+deduplicated across API replicas for five minutes.
+
+Generate a normal-looking decoy and its digest:
+
+```bash
+STELLA_CANARY_KEY="stella_mk_$(openssl rand -hex 32)"
+printf '%s' "$STELLA_CANARY_KEY" | shasum -a 256
+```
+
+Set the resulting digest as `SECURITY_CANARY_API_KEY_SHA256`. Put the plaintext
+key only in a decoy secret that normal application, backup, indexing, and
+support workflows never read. Configure the deployment's log platform to alert
+on the event name. Never put the decoy in customer documents or normal
+workspace data.
+
+The canary is detection and optional agent disruption, not authentication or
+authorization. Leaving the variable unset disables it without changing normal
+requests.
 
 ## Stay informed about updates
 

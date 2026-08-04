@@ -8,13 +8,14 @@ import type { SafeId } from "@/api/lib/branded-types";
 import { tSafeId, tUserId } from "@/api/lib/custom-schema";
 import { LIMITS } from "@/api/lib/limits";
 import { searchGlobal } from "@/api/lib/search/index-global";
+import { parseGlobalSearchCursor } from "@/api/lib/search/pagination";
+import { getSearchPreviewLocatorCandidates } from "@/api/lib/search/query";
 import { GLOBAL_SEARCH_RESULT_TYPES } from "@/api/lib/search/types";
 
 const isoDateTime = t.String({ format: "date-time" });
 
 export const searchBodySchema = t.Object({
   query: t.String({
-    minLength: 1,
     maxLength: LIMITS.searchQueryMaxLength,
   }),
   workspaceIds: t.Array(tSafeId("workspace"), { maxItems: 64 }),
@@ -37,6 +38,38 @@ export const searchBodySchema = t.Object({
 });
 
 type SearchBodySchema = Static<typeof searchBodySchema>;
+
+type SearchFilterInput = {
+  query: string;
+  types: readonly unknown[];
+  kinds?: readonly unknown[] | undefined;
+  editedByUserIds: readonly unknown[];
+  mimeTypes: readonly unknown[];
+  updatedFrom?: string | undefined;
+  updatedTo?: string | undefined;
+};
+
+/**
+ * A caller's workspace allowlist is an authorization boundary, not a search
+ * filter. An explicit workspace selection alone would still list an entire
+ * matter, so an empty text query needs a selective non-workspace filter.
+ */
+export const hasSearchQueryOrSelectiveFilter = ({
+  query,
+  types,
+  kinds,
+  editedByUserIds,
+  mimeTypes,
+  updatedFrom,
+  updatedTo,
+}: SearchFilterInput): boolean =>
+  query.trim().length > 0 ||
+  types.length > 0 ||
+  (kinds?.length ?? 0) > 0 ||
+  editedByUserIds.length > 0 ||
+  mimeTypes.length > 0 ||
+  updatedFrom !== undefined ||
+  updatedTo !== undefined;
 
 type WorkspaceNotFoundError = ReturnType<
   typeof status<400, { message: "Workspace not found in organization" }>
@@ -74,8 +107,6 @@ export const resolveSelectedWorkspaceIds = async ({
   }
 
   const found = await scopedDb((tx) =>
-    // SAFETY: IN-list over `accessible`, derived from `body.workspaceIds` which the route schema caps at maxItems: 64
-    // eslint-disable-next-line require-query-limit/require-query-limit
     tx.query.workspaces.findMany({
       where: {
         id: { in: accessible },
@@ -83,6 +114,7 @@ export const resolveSelectedWorkspaceIds = async ({
         status: { ne: "deleting" },
       },
       columns: { id: true },
+      limit: accessible.length,
     }),
   );
   if (found.length !== accessible.length) {
@@ -112,6 +144,16 @@ export const searchHandler = async ({
   body,
   search = searchGlobal,
 }: SearchHandlerProps) => {
+  if (!hasSearchQueryOrSelectiveFilter(body)) {
+    return status(400, {
+      message: "Provide a search query or at least one filter",
+    });
+  }
+
+  if (parseGlobalSearchCursor(body.cursor).type === "invalid") {
+    return status(400, { message: "Invalid cursor" });
+  }
+
   const resolved = await resolveSelectedWorkspaceIds({
     scopedDb,
     organizationId,
@@ -124,7 +166,7 @@ export const searchHandler = async ({
 
   const types = body.types.length > 0 ? body.types : body.kinds;
 
-  return await search({
+  const result = await search({
     query: body.query,
     organizationId,
     userId,
@@ -138,4 +180,9 @@ export const searchHandler = async ({
     cursor: body.cursor,
     limit: body.limit ?? LIMITS.searchPageSizeDefault,
   });
+
+  return {
+    ...result,
+    previewLocatorCandidates: getSearchPreviewLocatorCandidates(body.query),
+  };
 };

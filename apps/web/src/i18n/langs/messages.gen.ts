@@ -369,6 +369,7 @@ type Messages = {
     };
     "aiPrompt": "AI message composer";
     "aiThread": "AI conversation";
+    "analyzingSources": "Analyzing sources";
     "anonymizedMode": "Anonymized AI mode";
     "anonymizedModeDisabled": "Anonymized AI mode is off";
     "anonymizedModeEnabled": "Anonymized AI mode is on";
@@ -404,6 +405,7 @@ type Messages = {
     "attachFile": "Attach file";
     "attachedImage": "Attached image";
     "attachment": "Attachment";
+    "audioContent": "Generated audio";
     "cancelQueuedMessage": "Cancel queued message";
     "caseLawGreeting": "Ask about this decision — its full text is available here.";
     "chatAbout": "Chat about this";
@@ -451,6 +453,7 @@ type Messages = {
       "pickMatterPrompt": "Choose a matter to save this document into.";
       "previewName": "Document: {name}";
       "previewWaiting": "Waiting for content…";
+      "savePendingReview": "Resolve the pending AI suggestions before saving the document.";
     };
     "deleteThread": "Delete conversation";
     "editMode": {
@@ -477,6 +480,11 @@ type Messages = {
     "greeting": "What would you like to work on?";
     "greetingSubtitle": "Start with a matter, document, or plain question.";
     "hideThread": "Hide conversation";
+    "improvePrompt": "Improve prompt";
+    "improvePromptDraftChanged": "Draft changed, so the improvement wasn't applied.";
+    "improvePromptPlainTextOnly": "Prompt improvement is available for plain text only.";
+    "improvePromptUnavailableAnonymized": "Prompt improvement is unavailable in anonymized mode.";
+    "improvingPrompt": "Improving prompt…";
     "inDocument": "In document";
     "jumpToMessage": "Jump to this message";
     "landing": {
@@ -497,6 +505,15 @@ type Messages = {
         "entities": "In this matter";
       };
       "loadError": "Failed to load entities";
+    };
+    "modelMode": {
+      "deepThinking": "Deep Thinking";
+      "deepThinkingDescription": "Complex reasoning and analysis";
+      "exactModels": "Exact model";
+      "fastDescription": "Quick, everyday questions";
+      "select": "Select response mode";
+      "standard": "Standard";
+      "standardDescription": "Best for most tasks";
     };
     "modelSelector": {
       "defaultLabel": "Default (chat role)";
@@ -532,6 +549,9 @@ type Messages = {
     "renameThread": "Rename conversation";
     "resend": "Resend";
     "resizeThread": "Resize conversation";
+    "richContentLoading": "Loading interactive content…";
+    "richContentTitle": "Interactive content";
+    "richContentUnavailable": "This content cannot be displayed safely.";
     "sendError": "There was an issue sending your message. Contact support if the error persists.";
     "sendErrorAnonymizationBlocked": "stella could not anonymize one attachment, so nothing was sent. Remove the file or send this message without anonymization.";
     "sendErrorLoopDetected": "The AI response repeated too many times. Try again with a narrower request.";
@@ -666,6 +686,7 @@ type Messages = {
     };
     "unsupportedFileType": "Unsupported file type";
     "uploadFailed": "Failed to process file";
+    "videoContent": "Generated video";
     "webSearch": {
       "answer": "Web search summary";
       "answerDisclaimer": "Synthesized from public web results below. Verify against the linked sources.";
@@ -704,6 +725,8 @@ type Messages = {
     "editClause": "Edit clause";
     "editVariant": "Edit variant";
     "export": "Export";
+    "exportAsCsv": "Export as CSV";
+    "exportAsJson": "Export as JSON";
     "exportFailed": "Failed to export clauses";
     "formattingPreviewHint": "Numbering and styling here is a preview. The generated document applies its own list formatting, so don't type numbers by hand.";
     "importFailed": "Failed to import clauses";
@@ -860,9 +883,18 @@ type Messages = {
     "enterKey": "↵";
     "error": "Error";
     "expenses": "Expenses";
+    "export": {
+      "citations": "Citations";
+      "failed": "Couldn't save the message";
+      "footnotes": "Footnotes";
+      "formatDocx": "Word document (<docx>.docx</docx>)";
+      "inline": "Inline";
+      "title": "Save message";
+    };
     "filter": "Filter";
     "formula": "Formula";
     "goBack": "Go back";
+    "hideSecretValue": "Hide secret value";
     "history": "History";
     "import": "Import";
     "invite": "Invite";
@@ -963,6 +995,7 @@ type Messages = {
     "showAll": "Show all";
     "showLess": "Show less";
     "showMore": "Show more";
+    "showSecretValue": "Show secret value";
     "signOut": "Sign out";
     "somethingWentWrong": "Something went wrong";
     "sort": "Sort";
@@ -994,7 +1027,6 @@ type Messages = {
     "allow": "Allow";
     "completeSetup": "Complete setup";
     "defaultClientName": "An application";
-    "deny": "Deny";
     "description": "{clientName} wants to access your stella workspace";
     "error": "Something went wrong. Please try again.";
     "missingJurisdictions": "Your stella organization hasn't set up its practice jurisdictions yet. Some jurisdiction-aware tools will be unavailable until you complete setup.";
@@ -1206,6 +1238,7 @@ type Messages = {
       "aiConfigProviderValidationFailed": "The AI provider rejected the configuration. Check the API key and model.";
       "deeplKeyRejected": "The stored DeepL key was rejected. Replace it in organization settings.";
       "deeplQuotaExceeded": "The DeepL character quota for this organization has been used up.";
+      "disposableEmailNotAllowed": "Temporary email addresses are not allowed. Use a permanent email address.";
       "forbidden": "You do not have permission to do this.";
       "internalServerError": "The server could not complete the action. Please try again.";
       "legalSourceEntityLimitReached": "This matter has reached the entity limit, so the document could not be created.";
@@ -1714,6 +1747,10 @@ type Messages = {
       "description": "Install SKILL.md packs that add specialist methods and read-only resources to chat.";
       "disableSkill": "Disable skill";
       "disabled": "Disabled";
+      "discoverSkills": "Find skills";
+      "discoveredSkills": "{count, plural, one {# skill found} other {# skills found}}";
+      "discoveryEmpty": "No skills were found at this repository or folder.";
+      "discoverySkippedInvalid": "{count, plural, one {# invalid skill was skipped} other {# invalid skills were skipped}}";
       "dropFile": "Drop SKILL.md or .zip here";
       "editSkill": "Edit skill";
       "emptyDescription": "Upload a SKILL.md file, a zipped skill folder, or import a public GitHub skill URL.";
@@ -1744,9 +1781,16 @@ type Messages = {
       "generateTitle": "Generate skill with AI";
       "generating": "Generating…";
       "howItRuns": "How it runs";
-      "importHelp": "Paste a direct SKILL.md URL, a GitHub file URL, or a GitHub folder URL that contains SKILL.md.";
+      "importFailureFetch": "The skill source could not be loaded.";
+      "importFailureIntegrity": "The skill source changed after discovery. Review it again.";
+      "importFailureLimit": "The skill limit has been reached.";
+      "importFailureNameConflict": "A skill with this name already exists.";
+      "importHelp": "Paste a public GitHub repository, folder, or SKILL.md URL. Review the discovered skills before installing them.";
+      "importPartial": "{installedCount, plural, one {{installed} imported} other {{installed} imported}}; {failedCount, plural, one {{failed} failed} other {{failed} failed}}.";
+      "importSelected": "Import selected ({count})";
       "importSkill": "Import from URL";
       "importTitle": "Import skill";
+      "importedSkills": "{count, plural, one {Imported # skill} other {Imported # skills}}";
       "invalidPath": "Path must use lowercase letters, digits, dots, hyphens, or underscores";
       "license": "License: {license}";
       "newFile": "New file";
@@ -1760,6 +1804,7 @@ type Messages = {
       "scopeTeam": "Everyone in the team";
       "selectFileHint": "Select a file from the list to open it in the editor panel on the right.";
       "selectedFile": "Selected: {name}";
+      "selectionLimit": "Select up to {count} skills at once.";
       "sourceUpload": "Uploaded";
       "sourceUrl": "Public URL";
       "unsavedChanges": "Unsaved changes — discard?";
@@ -2088,8 +2133,21 @@ type Messages = {
     "recents": "Recents";
     "search": "Search";
     "shortcutCategories": {
+      "help": "Help";
       "navigation": "Navigation";
+      "review": "Document review";
     };
+    "shortcutsDialog": {
+      "collision": "Already assigned to {label}";
+      "description": "Browse keyboard shortcuts to work faster.";
+      "editShortcut": "Change shortcut";
+      "invalidBinding": "Add a non-modifier key";
+      "notRebindable": "This shortcut can't be changed";
+      "pressKeys": "Press new keys…";
+      "resetToDefault": "Reset to default";
+      "title": "Keyboard shortcuts";
+    };
+    "showShortcuts": "Show keyboard shortcuts";
     "sidebar": "Sidebar";
     "sidebarDescription": "Displays the mobile sidebar.";
     "templates": "Templates";
@@ -2312,11 +2370,25 @@ type Messages = {
     "settingsDescription": "Edit your organization name and slug";
     "switchOrganization": "Switch organization";
   };
+  "routeError": {
+    "backToMatters": "Return to matters";
+    "copyReference": "Copy error reference";
+    "descriptionAdministrator": "Try again. If the problem continues, return to your matters or contact your administrator with the reference below.";
+    "descriptionNone": "Try again. If the problem continues, return to your matters.";
+    "descriptionReport": "Try again. If the problem continues, return to your matters or report it with the reference below.";
+    "reference": "Error reference";
+    "reportBody": "Error reference: {reference}\n\nWhat happened?\n";
+    "reportProblem": "Report problem";
+    "reportSubject": "stella error {reference}";
+    "title": "This page couldn’t be opened";
+  };
   "search": {
     "aiRefine": "Improve query with AI";
     "continueInChat": "Continue in chat";
     "dateFrom": "From";
     "dateTo": "To";
+    "deleteSearchDescription": "This will permanently delete \"<bdi>{name}</bdi>\".";
+    "deleteSearchTitle": "Delete saved search";
     "editedBy": "Edited by";
     "emptyState": "Start typing to search across all matters.";
     "escKey": "ESC";
@@ -2333,9 +2405,16 @@ type Messages = {
     "mimeType": "File type";
     "noResults": "No results found for \"{query}\".";
     "placeholder": "Search across all matters...";
+    "previewUnavailable": "Preview unavailable";
     "recentSearches": "Recent searches";
     "recentlyOpenedFiles": "Recently opened files";
+    "renameSearchTitle": "Rename saved search";
     "resultCount": "{count, plural, one {# result} other {# results}}";
+    "saveSearch": "Save search";
+    "saveSearchNamePlaceholder": "e.g. Recent PDFs";
+    "saveSearchTitle": "Save search";
+    "savedSearches": "Saved searches";
+    "savedSearchesEmpty": "Save a search to reuse it.";
     "summaryAction": "Summarize top results";
     "summaryError": "Summary unavailable";
     "summaryLoading": "Summarizing results...";
@@ -2499,6 +2578,12 @@ type Messages = {
       "auditLogsTo": "To date";
       "auditLogsUserId": "User ID";
       "auditLogsUserIdPlaceholder": "Filter by user ID";
+      "documentProcessing": {
+        "description": "Automatically recognize text in scanned PDFs so their contents can be searched.";
+        "title": "Document text recognition";
+        "toggleLabel": "Automatically recognize text in scanned PDFs";
+        "updated": "Document text recognition setting updated";
+      };
       "documentTypes": {
         "addPlaceholder": "Add a document type (e.g. Employment Agreement)";
         "deleteFailed": "Couldn't delete document type";
@@ -3082,6 +3167,7 @@ type Messages = {
       "copyOption": "Copy (keep original)";
       "description": "Copy or move \"{name}\" to another Matter";
       "descriptionCount": "Copy or move {count, plural, one {# item} other {# items}} to another Matter";
+      "goToMatter": "Go to matter";
       "menuItem": "Copy/Move to Matter";
       "moveButton": "Move";
       "moveOption": "Move (delete original)";
@@ -3168,12 +3254,18 @@ type Messages = {
         "updateRequiredTitle": "Update stella desktop";
       };
       "downloadAsZip": "Download as ZIP";
+      "downloadExtractedText": "Extracted text (.txt)";
       "downloadOriginal": "Original file";
       "downloadPdf": "PDF";
+      "downloadSearchablePdf": "Searchable PDF";
       "maxEntitiesReached": "Max entities count reached";
+      "ocrAlreadyProcessed": "Text recognition has already completed";
+      "ocrQueueFailed": "Couldn't queue text recognition";
+      "ocrQueued": "Text recognition queued for the next OCR batch";
       "rateLimited": "Rate limited; resuming in {seconds, number}s";
       "renamedToAvoidConflicts": "{count, plural, one {# file renamed to avoid conflicts} other {# files renamed to avoid conflicts}}";
       "retryFailed": "Retry {count, plural, one {# file} other {# files}}";
+      "runOcr": "Queue OCR";
       "uploadedPartially": "{failed, plural, one {# file} other {# files}} failed out of {total, number}";
       "uploadedSuccessfully": "Files uploaded successfully";
       "uploading": "Uploading files";
@@ -3338,6 +3430,92 @@ type Messages = {
       "equals": "Equals";
     };
     "overview": {
+      "activity": {
+        "actorActions": {
+          "added": "Added";
+          "cancelled": "Cancelled";
+          "created": "Created";
+          "deleted": "Deleted";
+          "executed": "Ran";
+          "removed": "Removed";
+          "reviewed": "Reviewed";
+          "updated": "Updated";
+        };
+        "approvals": {
+          "approved": "Approval granted";
+          "notRequired": "Not required";
+          "pending": "Approval pending";
+          "rejected": "Approval rejected";
+        };
+        "automatedService": "Automated service";
+        "deletedUser": "Deleted user";
+        "details": {
+          "actor": "Performed by";
+          "approval": "Approval";
+          "approvedBy": "Approved by";
+          "channel": "Channel";
+          "dateTime": "Date and time";
+          "direct": "Direct activity";
+          "eventId": "Event ID";
+          "notAvailable": "Not available";
+          "openTarget": "Open item";
+          "runId": "Run ID";
+          "system": "System activity";
+          "target": "Target";
+          "title": "Activity details";
+          "trigger": "Initiated by";
+          "webhook": "Webhook";
+        };
+        "empty": "No activity in this matter yet.";
+        "filterLabel": "Filter activity";
+        "filters": {
+          "all": "All activity";
+          "automation": "Automation";
+          "court": "Court records";
+          "documents": "Documents and files";
+          "matter": "Matter details";
+          "tasks": "Agenda items";
+          "team": "Matter team";
+        };
+        "list": {
+          "actor": "Actor";
+          "dateTime": "Date and time";
+          "event": "Event";
+          "provenance": "Origin";
+        };
+        "loadEarlier": "Load earlier";
+        "loading": "Loading…";
+        "provenance": {
+          "connected": "Using connected access";
+          "connectedBy": "Connected by {user}";
+          "delegated": "Delegated by another agent";
+          "delegatedBy": "Delegated by an agent for {user}";
+          "dispatched": "Dispatched by a user";
+          "dispatchedBy": "Dispatched by {user}";
+          "dispatchedInChatBy": "Dispatched by {user} in Chat";
+          "scheduled": "Started on schedule";
+          "scheduledBy": "Scheduled automation owned by {user}";
+        };
+        "runCount": "{count, plural, one {# activity} other {# activities}}";
+        "sources": {
+          "chat": "Chat conversation";
+          "flow": "Workflow";
+          "mcp": "Connected tool";
+        };
+        "targets": {
+          "automation": "automation";
+          "court": "court record";
+          "document": "document";
+          "matter": "matter";
+          "task": "agenda item";
+          "team": "matter team";
+        };
+        "title": "Matter activity";
+        "views": {
+          "list": "List view";
+          "timeline": "Timeline view";
+        };
+      };
       "atAGlance": "At a glance";
       "edited": "edited";
       "getStarted": "Get started by uploading documents or creating your first folder.";

@@ -16,6 +16,11 @@ import { Button } from "@stll/ui/components/button";
 import { Separator } from "@stll/ui/components/separator";
 import { stellaToast } from "@stll/ui/components/toast";
 
+import {
+  fetchPrintPdf,
+  printPdfBuffer,
+} from "@/components/pdf/peek/peek-pdf-print";
+import { PeekPdfControls } from "@/components/pdf/peek/peek-pdf-viewer";
 import Tooltip from "@/components/tooltip";
 import { useFormatter } from "@/i18n/formatting-context";
 import { useAnalytics } from "@/lib/analytics/provider";
@@ -25,14 +30,9 @@ import { detached } from "@/lib/detached";
 import { unwrapEden } from "@/lib/errors/api";
 import { ClientOperationError } from "@/lib/errors/client";
 import { fetchWithTimeout } from "@/lib/fetch";
+import { fileMetadataOptions } from "@/lib/files/file-metadata-query";
 import { downloadFile } from "@/lib/utils";
-import { fileMetadataOptions } from "@/routes/_protected.workspaces/$workspaceId/-components/files/queries";
-import {
-  fetchPrintPdf,
-  printPdfBuffer,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/peek/peek-pdf-print";
-import { PeekPdfControls } from "@/routes/_protected.workspaces/$workspaceId/-components/peek/peek-pdf-viewer";
-import { useWorkspaceStore } from "@/routes/_protected.workspaces/$workspaceId/-store";
+import { useWorkspaceStore } from "@/lib/workspaces/store";
 
 const SCALE_OFFSET_STEP = 0.2;
 

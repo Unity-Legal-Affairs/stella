@@ -15,6 +15,7 @@
  *   - render the shared `PromptBar` for the composer
  */
 
+import { useCallback, useState } from "react";
 import type { MouseEvent } from "react";
 
 import {
@@ -50,9 +51,10 @@ import { ChatMatterPicker } from "@/components/chat/chat-matter-picker";
 import { ChatMattersContext } from "@/components/chat/chat-matters-context";
 import { ChatThreadMessages } from "@/components/chat/chat-thread-messages";
 import { PromptSuggestions } from "@/components/chat/prompt-suggestions";
-import type { ChatTab } from "@/components/inspector/inspector-store";
-import { useInspectorStore } from "@/components/inspector/inspector-store";
+import { useInspectorCommandStore } from "@/components/inspector/inspector-command-store";
 import { InspectorTabHeader } from "@/components/inspector/inspector-tab-header";
+import type { ChatTab } from "@/components/inspector/inspector-tabs-store";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import { buildMaximizeTabAction } from "@/components/inspector/maximize-tab";
 import {
   AIUnavailableDialogTrigger,
@@ -65,6 +67,10 @@ import { useChatSession } from "@/features/chat/hooks/use-chat-session";
 import { useChatThreadRuntime } from "@/features/chat/hooks/use-chat-thread-runtime";
 import { useChatUserContext } from "@/features/chat/hooks/use-chat-user-context";
 import { buildChatRequestMessage } from "@/features/chat/lib/build-chat-request-message";
+import {
+  resolveSuggestedPromptsAvailability,
+  resolveSuggestedPromptsTurnOwner,
+} from "@/features/chat/lib/suggested-prompts-availability";
 import {
   chatThreadOptions,
   chatThreadSuggestedPromptsOptions,
@@ -80,7 +86,11 @@ import {
   useChatAnonymized,
 } from "@/lib/chat-anonymized-store";
 import { useIsChatDraftEmpty } from "@/lib/chat-draft-store";
-import { type ChatThreadRef, createChatThreadId } from "@/lib/chat-thread-ref";
+import {
+  createChatThreadId,
+  getChatThreadKey,
+  type ChatThreadRef,
+} from "@/lib/chat-thread-ref";
 import { isPlaceholderThreadTitle } from "@/lib/chat-thread-title";
 import { detached } from "@/lib/detached";
 import { useModelSelectorStore } from "@/lib/model-selector-store";
@@ -88,7 +98,7 @@ import type { ChatPrompt } from "@/lib/prompts/types";
 import { useSavedPrompts } from "@/lib/prompts/use-saved-prompts";
 import { matchReservedChatCommand } from "@/lib/reserved-chat-commands";
 import { toSafeId } from "@/lib/safe-id";
-import { workspacesNavigationOptions } from "@/routes/_protected.workspaces/-queries";
+import { workspacesNavigationOptions } from "@/lib/workspaces/queries";
 
 type ChatTabPanelProps = {
   tab: ChatTab;
@@ -163,12 +173,13 @@ export const ChatTabPanel = ({
   // same store — so the shield can never show a state the next request
   // won't honour.
   const anonymized = useChatAnonymized(threadRef);
+  const [composerFocused, setComposerFocused] = useState(false);
   const getSendMode = useLatestCallback(() => getChatSendMode(threadRef));
   const activeOrganizationId = useAuthenticatedUser().activeOrganizationId;
   const chatContextLabel = useChatContextLabel(tab, activeOrganizationId);
 
   const { openChat, resetChatTabId, setChatContext, updateLabel } =
-    useInspectorStore(
+    useInspectorTabsStore(
       useShallow((s) => ({
         openChat: s.openChat,
         resetChatTabId: s.resetChatTabId,
@@ -224,6 +235,7 @@ export const ChatTabPanel = ({
     removeQueuedMessage,
     stop,
     isGenerating,
+    turnAbandoned,
     alwaysApprovedTools,
     conversationApprovedTools,
     handleApprove,
@@ -233,6 +245,7 @@ export const ChatTabPanel = ({
     handleAskUserEditAndRerun,
     handleAlwaysAllow,
     handleCreateDocumentResolve,
+    handleOpenCreateDocumentDraft,
     handleOpenCreatedDocument,
     createDocumentMatters,
     isLoadingCreateDocumentMatters,
@@ -241,6 +254,7 @@ export const ChatTabPanel = ({
   } = useChatSession({
     chat,
     conversationId: threadRef.threadId,
+    getContextMatterIds,
     getSendMode,
     initialOlderCursor: data.olderCursor,
     threadRef,
@@ -274,27 +288,59 @@ export const ChatTabPanel = ({
   // attachments come from the same provider as the right-panel
   // chat. Thread ref is shared with `chatThreadOptions` above so
   // drafts persist across tab close/open.
-  const lastMessageId = messages.at(-1)?.id ?? null;
-  const lastMessageRole = messages.at(-1)?.role ?? null;
+  const lastMessage = messages.at(-1);
+  const [editingAskUserToolCallIds, setEditingAskUserToolCallIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set<string>());
+  const handleAskUserEditingChange = useCallback(
+    (toolCallId: string, isEditing: boolean) => {
+      setEditingAskUserToolCallIds((current) => {
+        if (current.has(toolCallId) === isEditing) {
+          return current;
+        }
+        const next = new Set(current);
+        if (isEditing) {
+          next.add(toolCallId);
+        } else {
+          next.delete(toolCallId);
+        }
+        return next;
+      });
+    },
+    [],
+  );
   const editorIsInitiallyEmpty = useIsChatDraftEmpty(threadRef);
   // Fetch suggestions only when editor is empty, last message is from
   // assistant, and no generation is in progress. Using draft state
   // avoids triggering the query when user is actively typing.
-  const eligibleForSuggestions =
-    editorIsInitiallyEmpty &&
-    lastMessageId !== null &&
-    lastMessageRole === "assistant";
+  const suggestedPromptsAvailability = resolveSuggestedPromptsAvailability({
+    editorIsEmpty: editorIsInitiallyEmpty,
+    error,
+    isGenerating,
+    lastMessage: lastMessage ?? null,
+    turnAbandoned,
+    turnOwner: resolveSuggestedPromptsTurnOwner({
+      approvalPendingMessageId,
+      hasReopenedAskUser: editingAskUserToolCallIds.size > 0,
+      lastMessage: lastMessage ?? null,
+    }),
+  });
+  const lastMessageId =
+    suggestedPromptsAvailability.status === "eligible"
+      ? suggestedPromptsAvailability.lastMessageId
+      : "";
   const { data: suggestedPromptsData } = useQuery(
     chatThreadSuggestedPromptsOptions({
       activeOrganizationId,
-      enabled: !isGenerating && eligibleForSuggestions,
-      lastMessageId: lastMessageId ?? "",
+      enabled: suggestedPromptsAvailability.status === "eligible",
+      lastMessageId,
       threadRef,
     }),
   );
-  const suggestedPrompts = suggestedPromptsData
-    ? suggestedPromptsData.prompts
-    : [];
+  const suggestedPrompts =
+    suggestedPromptsAvailability.status === "eligible" && suggestedPromptsData
+      ? suggestedPromptsData.prompts
+      : [];
   const suggestedFollowupPrompt = suggestedPrompts.at(0) ?? undefined;
   const editorController = useChatEditor({
     placeholder: t("chat.contextPlaceholder", { context: chatContextLabel }),
@@ -354,7 +400,7 @@ export const ChatTabPanel = ({
   // rename state locally so they consume the flag here.
   const startRenameFromStore = labelRename.startEditing;
   const consumeRenameRequest = useLatestCallback(() => {
-    const store = useInspectorStore.getState();
+    const store = useInspectorCommandStore.getState();
     if (store.pendingRenameTabId === tab.id) {
       startRenameFromStore();
       store.clearRenameRequest();
@@ -362,7 +408,7 @@ export const ChatTabPanel = ({
   });
   useMountEffect(() => {
     consumeRenameRequest();
-    return useInspectorStore.subscribe(consumeRenameRequest);
+    return useInspectorCommandStore.subscribe(consumeRenameRequest);
   });
 
   return (
@@ -421,9 +467,11 @@ export const ChatTabPanel = ({
                   loadOlderError={loadOlderError}
                   messages={messages}
                   onAskUserEditAndRerun={handleAskUserEditAndRerun}
+                  onAskUserEditingChange={handleAskUserEditingChange}
                   onLoadOlder={loadOlder}
                   onAskUserSubmit={handleAskUserSubmit}
                   onCreateDocumentResolve={handleCreateDocumentResolve}
+                  onOpenCreateDocumentDraft={handleOpenCreateDocumentDraft}
                   onOpenCreatedDocument={handleOpenCreatedDocument}
                   onRemoveQueuedMessage={removeQueuedMessage}
                   onResend={resendLatestMessage}
@@ -442,6 +490,8 @@ export const ChatTabPanel = ({
           <ChatAnonymizationLayer
             editor={editorController.editor}
             enabled={anonymized}
+            focused={composerFocused}
+            ownerKey={getChatThreadKey(threadRef)}
             workspaceId={tabWorkspaceId ?? threadRef.threadId}
           />
           {/* PromptBar owns its own docked positioning (via
@@ -450,6 +500,7 @@ export const ChatTabPanel = ({
               chat. The chips ride the same one geometry through the
               `followupChips` slot. */}
           <PromptBar
+            anonymized={anonymized}
             attachmentsEnabled
             editorController={editorController}
             emptyPlaceholder={
@@ -483,6 +534,7 @@ export const ChatTabPanel = ({
               />
             }
             layout="standalone"
+            onFocusChange={setComposerFocused}
             onStop={() => {
               stop();
             }}

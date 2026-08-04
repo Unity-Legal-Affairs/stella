@@ -15,19 +15,20 @@ import type {
 } from "@/components/inspector/view-registry";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { api } from "@/lib/api";
+import { authClient } from "@/lib/auth";
+import { roleOptions } from "@/lib/auth-queries";
 import { BoundedSet } from "@/lib/bounded-set";
 import { detached } from "@/lib/detached";
-import { subscribeToMcpOAuthOutcome } from "@/lib/mcp-oauth-channel";
-import { ensureRouteQueryData } from "@/lib/react-query";
-import { roleOptions } from "@/routes/-queries";
-import type { CatalogueBrowserFilterKind } from "@/routes/_protected.knowledge/-components/catalogue/catalogue-browser";
-import type { ToolDetailPayload } from "@/routes/_protected.knowledge/-components/catalogue/tool-detail-view";
-import { knowledgeKeys } from "@/routes/_protected.knowledge/-queries";
+import { knowledgeKeys } from "@/lib/knowledge/queries";
 import {
   catalogueKeys,
   catalogueOptions,
-} from "@/routes/_protected.knowledge/-queries/catalogue";
-import { organizationSettingsOptions } from "@/routes/_protected.organization/-settings-queries";
+} from "@/lib/knowledge/queries/catalogue";
+import { subscribeToMcpOAuthOutcome } from "@/lib/mcp-oauth-channel";
+import { organizationSettingsOptions } from "@/lib/organization/settings-queries";
+import { ensureRouteQueryData } from "@/lib/react-query";
+import type { CatalogueBrowserFilterKind } from "@/routes/_protected.knowledge/-components/catalogue/catalogue-browser";
+import type { ToolDetailPayload } from "@/routes/_protected.knowledge/-components/catalogue/tool-detail-view";
 
 const LazyToolDetailView = lazy(async () => {
   const module =
@@ -176,6 +177,10 @@ export const Route = createFileRoute("/_protected/knowledge/tools")({
     ]);
 
     return {
+      canImportSkills: authClient.organization.checkRolePermission({
+        permissions: { agentSkill: ["create"] },
+        role,
+      }),
       canManageCustomTools: role === "admin" || role === "owner",
       practiceJurisdictions: settings.practiceJurisdictions,
     };
@@ -196,7 +201,12 @@ function ToolsPage() {
     select: (s): CatalogueBrowserFilterKind | undefined => s.kind,
   });
   const routeData = Route.useLoaderData({
-    select: ({ canManageCustomTools, practiceJurisdictions }) => ({
+    select: ({
+      canImportSkills,
+      canManageCustomTools,
+      practiceJurisdictions,
+    }) => ({
+      canImportSkills,
       canManageCustomTools,
       practiceJurisdictions,
     }),
@@ -237,6 +247,7 @@ function ToolsPage() {
       <ToolsPageHeader />
       <Suspense fallback={<ToolsCatalogueSkeleton />}>
         <LazyCatalogueBrowser
+          canImportSkills={routeData.canImportSkills}
           canManageCustomTools={routeData.canManageCustomTools}
           initialKind={initialKind}
           key={initialKind ?? "all"}

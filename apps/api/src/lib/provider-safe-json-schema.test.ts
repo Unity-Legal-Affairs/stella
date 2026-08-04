@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import fc from "fast-check";
 import * as v from "valibot";
 
+import { TANSTACK_AI_PROVIDERS } from "@stll/ai-catalog";
 import { propertyConfig } from "@stll/property-testing";
 
 import { toTanStackToolSchema } from "@/api/handlers/chat/tools/tanstack-tool-schema";
@@ -10,8 +11,12 @@ import {
   providerSafeJsonSchemaOptionsForTanStackProvider,
   projectToProviderSafeJsonSchema,
   PROVIDER_SAFE_JSON_SCHEMA_KEYWORDS,
+  VALUE_CONSTRAINT_JSON_SCHEMA_KEYWORDS,
 } from "@/api/lib/provider-safe-json-schema";
-import { projectSchemaInputJsonSchema } from "@/api/lib/tanstack-ai-schema";
+import {
+  projectSchemaInputJsonSchema,
+  toTanStackValibotSchema,
+} from "@/api/lib/tanstack-ai-schema";
 
 const PROVIDER_SAFE_KEYWORDS = new Set<string>(
   PROVIDER_SAFE_JSON_SCHEMA_KEYWORDS,
@@ -120,20 +125,136 @@ const schemaWithComposition = fc.oneof(
 
 describe("projectToProviderSafeJsonSchema", () => {
   test("selects explicit schema dialects for provider adapters", () => {
-    expect(providerSafeJsonSchemaOptionsForTanStackProvider("google")).toEqual({
+    expect(
+      providerSafeJsonSchemaOptionsForTanStackProvider(
+        "google",
+        "structured-output",
+      ),
+    ).toEqual({
       enumValueStrategy: "string-only",
       nullUnionStrategy: "openapi",
+      valueConstraintStrategy: "omit",
     });
     expect(
-      providerSafeJsonSchemaOptionsForTanStackProvider("openrouter"),
+      providerSafeJsonSchemaOptionsForTanStackProvider("google", "tool"),
+    ).toEqual({
+      enumValueStrategy: "string-only",
+      nullUnionStrategy: "openapi",
+      valueConstraintStrategy: "preserve",
+    });
+    expect(
+      providerSafeJsonSchemaOptionsForTanStackProvider("openrouter", "tool"),
     ).toEqual({
       enumValueStrategy: "string-only",
       nullUnionStrategy: "json-schema",
+      valueConstraintStrategy: "preserve",
     });
-    expect(providerSafeJsonSchemaOptionsForTanStackProvider("openai")).toEqual({
+    expect(
+      providerSafeJsonSchemaOptionsForTanStackProvider(
+        "openai",
+        "structured-output",
+      ),
+    ).toEqual({
       enumValueStrategy: "json-schema",
       nullUnionStrategy: "json-schema",
+      valueConstraintStrategy: "omit",
     });
+  });
+
+  test("omits value constraints from every provider's structured output", () => {
+    for (const provider of TANSTACK_AI_PROVIDERS) {
+      expect(
+        providerSafeJsonSchemaOptionsForTanStackProvider(
+          provider,
+          "structured-output",
+        ).valueConstraintStrategy,
+      ).toBe("omit");
+      expect(
+        providerSafeJsonSchemaOptionsForTanStackProvider(provider, "tool")
+          .valueConstraintStrategy,
+      ).toBe("preserve");
+    }
+  });
+
+  test("drops every allowlisted value constraint under the omit strategy", () => {
+    const constrained = {
+      type: "object",
+      properties: Object.fromEntries(
+        VALUE_CONSTRAINT_JSON_SCHEMA_KEYWORDS.map((keyword, index) => [
+          `field${String(index)}`,
+          { type: "string", [keyword]: 4 },
+        ]),
+      ),
+    };
+
+    const { schema, droppedKeywords } = projectToProviderSafeJsonSchema(
+      constrained,
+      { valueConstraintStrategy: "omit" },
+    );
+
+    const projectedKeywords = collectKeywords(schema);
+    for (const [
+      index,
+      keyword,
+    ] of VALUE_CONSTRAINT_JSON_SCHEMA_KEYWORDS.entries()) {
+      expect(projectedKeywords.has(keyword)).toBe(false);
+      expect(droppedKeywords).toContain(
+        `properties.field${String(index)}.${keyword}`,
+      );
+    }
+  });
+
+  test("keeps structured-output array bounds local to the app", () => {
+    const evidenceSchema = v.strictObject({
+      source: v.string(),
+      locator: v.string(),
+    });
+    const sourceSchema = v.strictObject({
+      entries: v.pipe(
+        v.array(
+          v.strictObject({
+            heading: v.string(),
+            status: v.picklist(["accepted", "needs-work", "not-applicable"]),
+            explanation: v.string(),
+            primaryEvidence: v.pipe(v.array(evidenceSchema), v.maxLength(8)),
+            secondaryEvidence: v.pipe(v.array(evidenceSchema), v.maxLength(8)),
+            suggestedRevision: v.nullable(v.string()),
+          }),
+        ),
+        v.minLength(1),
+        v.maxLength(200),
+      ),
+    });
+    for (const provider of TANSTACK_AI_PROVIDERS) {
+      const providerSchema = convertSchemaToJsonSchema(
+        toTanStackValibotSchema(
+          sourceSchema,
+          providerSafeJsonSchemaOptionsForTanStackProvider(
+            provider,
+            "structured-output",
+          ),
+        ),
+      );
+
+      expect(providerSchema).toBeDefined();
+      const providerKeywords = collectProjectedSchemaKeywords(providerSchema);
+      expect(providerKeywords.has("minItems")).toBe(false);
+      expect(providerKeywords.has("maxItems")).toBe(false);
+    }
+
+    expect(() => v.parse(sourceSchema, { entries: [] })).toThrow();
+
+    const tooManyEntries = {
+      entries: Array.from({ length: 201 }, (_, index) => ({
+        heading: `Section ${String(index + 1)}`,
+        status: "accepted",
+        explanation: "Synthetic review note.",
+        primaryEvidence: [],
+        secondaryEvidence: [],
+        suggestedRevision: null,
+      })),
+    };
+    expect(() => v.parse(sourceSchema, tooManyEntries)).toThrow();
   });
 
   test("drops propertyNames from the fill_template repro while keeping additionalProperties", () => {

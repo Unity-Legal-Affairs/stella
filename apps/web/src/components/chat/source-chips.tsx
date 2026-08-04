@@ -20,12 +20,12 @@ import {
   collectExternalSources,
   collectSourceDocuments,
 } from "@/components/chat/source-chips.logic";
+import { DocumentIcon } from "@/components/document-icon";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { detached } from "@/lib/detached";
+import { mcpConnectorsOptions } from "@/lib/knowledge/queries";
 import { sanitizeHref } from "@/lib/sanitize-href";
-import { mcpConnectorsOptions } from "@/routes/_protected.knowledge/-queries";
-import { DocumentIcon } from "@/routes/_protected.workspaces/$workspaceId/-components/document-icon";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
 
 type SourceChipsProps = {
   activeOrganizationId: string;
@@ -229,7 +229,7 @@ const ExternalSourceChip = ({
   const [faviconRequested, setFaviconRequested] = useState(false);
   const revealFavicon = () => setFaviconRequested(true);
   const handleClick = () => {
-    useInspectorStore.getState().openExternal({
+    useInspectorTabsStore.getState().openExternal({
       connectorSlug: source.connectorSlug,
       iconHref: source.iconHref,
       label: source.title,

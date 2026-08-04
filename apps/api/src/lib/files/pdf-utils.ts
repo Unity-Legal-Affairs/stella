@@ -1,0 +1,33 @@
+import { Result, TaggedError } from "better-result";
+
+import { LIMITS } from "@/api/lib/limits";
+import { resolveRuntimeWorkerPath } from "@/api/lib/runtime-worker-path";
+import { spawnWorker } from "@/api/lib/subprocess";
+
+class CorruptedPdfError extends TaggedError("CorruptedPdfError")<{
+  message: string;
+}> {}
+
+const WORKER_PATH = resolveRuntimeWorkerPath({
+  outputFile: "pdf-worker.js",
+  sourceDir: import.meta.dir,
+  sourceFile: "pdf-worker.ts",
+});
+
+export const isEncryptedPdf = async (buffer: ArrayBuffer) => {
+  const result = await spawnWorker({
+    workerPath: WORKER_PATH,
+    stdin: new Blob([buffer]),
+    timeoutMs: LIMITS.extractionTimeoutMs,
+  });
+
+  if (Result.isError(result)) {
+    return Result.err(
+      new CorruptedPdfError({
+        message: result.error.message,
+      }),
+    );
+  }
+
+  return Result.ok(result.value === "true");
+};

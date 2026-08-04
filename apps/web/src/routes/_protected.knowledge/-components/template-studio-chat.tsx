@@ -64,6 +64,7 @@ import type {
   UnresolvedActiveDocxEditToolCallPart,
 } from "@/components/chat/chat-ui-tools";
 import { useAIKeyGate } from "@/components/require-ai-key";
+import { isInputType } from "@/components/templates/template-field-manifest";
 import { useChatSession } from "@/features/chat/hooks/use-chat-session";
 import { useChatThreadRuntime } from "@/features/chat/hooks/use-chat-thread-runtime";
 import { useChatUserContext } from "@/features/chat/hooks/use-chat-user-context";
@@ -90,13 +91,12 @@ import {
   useChatAnonymized,
 } from "@/lib/chat-anonymized-store";
 import { CHAT_EDIT_APPLY_MODE } from "@/lib/chat-edit-mode";
-import { toChatThreadId } from "@/lib/chat-thread-ref";
+import { getChatThreadKey, toChatThreadId } from "@/lib/chat-thread-ref";
 import type { ChatThreadId, ChatThreadRef } from "@/lib/chat-thread-ref";
 import { detached } from "@/lib/detached";
 import { toAPIError } from "@/lib/errors/api";
 import { toSafeId } from "@/lib/safe-id";
 import { inputTypeValueKind } from "@/lib/value-types";
-import { isInputType } from "@/routes/_protected.knowledge/-components/template-field-manifest";
 import { useTemplateStudioStore } from "@/routes/_protected.knowledge/-components/template-studio-store";
 import {
   buildOperationSpecs,
@@ -597,6 +597,7 @@ const TemplateStudioChatInner = ({
   // transport reads `getChatSendMode(threadRef)`, and the anonymization
   // layer highlights the same value — one source, display equals send.
   const anonymized = useChatAnonymized(threadRef);
+  const [composerFocused, setComposerFocused] = useState(false);
   const getSendMode = useLatestCallback(() => getChatSendMode(threadRef));
 
   // No `handleActiveDocxEditToolCall` in the context: the transport
@@ -651,6 +652,7 @@ const TemplateStudioChatInner = ({
     handleAskUserEditAndRerun,
     handleAlwaysAllow,
     handleCreateDocumentResolve,
+    handleOpenCreateDocumentDraft,
     handleOpenCreatedDocument,
     createDocumentMatters,
     isLoadingCreateDocumentMatters,
@@ -1271,6 +1273,7 @@ const TemplateStudioChatInner = ({
               onAskUserEditAndRerun={handleAskUserEditAndRerun}
               onAskUserSubmit={handleAskUserSubmit}
               onCreateDocumentResolve={handleCreateDocumentResolve}
+              onOpenCreateDocumentDraft={handleOpenCreateDocumentDraft}
               onOpenCreatedDocument={handleOpenCreatedDocument}
               onRemoveQueuedMessage={removeQueuedMessage}
               onResend={resendLatestMessage}
@@ -1334,9 +1337,12 @@ const TemplateStudioChatInner = ({
         <ChatAnonymizationLayer
           editor={editorController.editor}
           enabled={anonymized}
+          focused={composerFocused}
+          ownerKey={getChatThreadKey(threadRef)}
           workspaceId={threadRef.threadId}
         />
         <PromptBar
+          anonymized={anonymized}
           attachmentsEnabled
           canSubmitNow={canSubmitWithCurrentSnapshot}
           editorController={editorController}
@@ -1354,6 +1360,7 @@ const TemplateStudioChatInner = ({
             </span>
           }
           layout="floating"
+          onFocusChange={setComposerFocused}
           onStop={() => {
             stop();
           }}

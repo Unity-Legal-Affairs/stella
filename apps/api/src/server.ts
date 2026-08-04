@@ -48,6 +48,7 @@ import { hostedUsageWebhookRoute } from "@/api/handlers/hosted-usage-webhook/rou
 import { invoicesRoute } from "@/api/handlers/invoices/routes";
 import { legislationCorpusRoute } from "@/api/handlers/legislation/corpus-routes";
 import { legislationRoute } from "@/api/handlers/legislation/routes";
+import { handleMcpAppSandboxRequest } from "@/api/handlers/mcp-app-sandbox/routes";
 import { mcpConnectorsRoute } from "@/api/handlers/mcp-connectors/routes";
 import { mcpRoute } from "@/api/handlers/mcp/routes";
 import { meRoute } from "@/api/handlers/me/routes";
@@ -59,9 +60,11 @@ import { propertiesRoute } from "@/api/handlers/properties/routes";
 import { ratesRoute } from "@/api/handlers/rates/routes";
 import { initReportExportWorker } from "@/api/handlers/reports/report-export-queue";
 import { reportsRoute } from "@/api/handlers/reports/routes";
+import { savedSearchesRoute } from "@/api/handlers/saved-searches/routes";
 import { searchRoute } from "@/api/handlers/search/routes";
 import { sharepointRoute } from "@/api/handlers/sharepoint/routes";
 import { skillsRoute } from "@/api/handlers/skills/routes";
+import { isSkillSourceRateLimitedRequest } from "@/api/handlers/skills/source-rate-limit";
 import { smokeRoute } from "@/api/handlers/smoke/routes";
 import { styleSetsRoute } from "@/api/handlers/style-sets/routes";
 import { isStyleSetUploadRateLimitedRequest } from "@/api/handlers/style-sets/upload-rate-limit";
@@ -79,12 +82,17 @@ import { userFilesRoute } from "@/api/handlers/user-files/routes";
 import { verifyAuthRoute, verifyRoute } from "@/api/handlers/verify/routes";
 import { viewTemplatesRoute } from "@/api/handlers/view-templates/routes";
 import { viewsRoute } from "@/api/handlers/views/routes";
+import { wellKnownRoute } from "@/api/handlers/well-known/routes";
 import { workspaceEventsRoute } from "@/api/handlers/workspaces/events";
 import { workspacesRoute } from "@/api/handlers/workspaces/routes";
 import { initAccountDeletionCleanupWorker } from "@/api/lib/account-deletion-cleanup-queue";
 import { captureRequestError } from "@/api/lib/analytics/capture";
 import { getAnalytics } from "@/api/lib/analytics/client";
 import { getAuth } from "@/api/lib/auth";
+import {
+  resolveClientIp,
+  resolveSignupRateLimitClientIp,
+} from "@/api/lib/client-ip";
 import {
   beginRequestQueryCounter,
   currentQueryCount,
@@ -93,18 +101,19 @@ import {
 import { assertMigrationsApplied } from "@/api/lib/db/assert-migrations-applied";
 import { detached } from "@/api/lib/detached";
 import { DEV_INSPECTOR_ORIGINS, frontendOrigins } from "@/api/lib/dev-origins";
+import { initEntityDeletionCleanupWorker } from "@/api/lib/entity-deletion-cleanup-queue";
 import { httpError } from "@/api/lib/errors/http-error";
-import {
-  errorFingerprint,
-  errorTag,
-  unredactedErrorFields,
-} from "@/api/lib/errors/utils";
+import { errorFingerprint, errorTag } from "@/api/lib/errors/utils";
 import { initFileDerivativeWorker } from "@/api/lib/file-derivative-queue";
 import { initFlowRunWorker } from "@/api/lib/flows/flow-run-worker";
 import { API_RATE_LIMITS } from "@/api/lib/limits";
 import { FORMATTING_LOCALE_HEADER } from "@/api/lib/locale";
-import { logger } from "@/api/lib/observability/logger";
 import {
+  logger,
+  type RequestErrorFingerprint,
+} from "@/api/lib/observability/logger";
+import {
+  enrichRequestContext,
   getRequestContext,
   getRequestId,
   initRequestContext,
@@ -117,6 +126,7 @@ import {
   refreshCorpusS3,
   refreshS3,
 } from "@/api/lib/s3";
+import { securityCanaryInterceptor } from "@/api/lib/security-canary";
 import { setSecurityHeaders } from "@/api/lib/security-headers";
 import { startSse, stopSse } from "@/api/lib/sse";
 import { initStyleSetPackageCleanupWorker } from "@/api/lib/style-set-package-cleanup-queue";
@@ -173,18 +183,31 @@ const setDbQueryCountHeader = (set: Context["set"]) => {
 
 const shouldLogRequest = (path: string): boolean => path !== HEALTH_PATH;
 
-const getRouteName = ({
-  path,
-  route,
-}: {
-  path: string;
-  route: string | undefined;
-}): string => route ?? path;
+const getRouteName = (route: string | undefined): string =>
+  route ?? "unmatched";
 
-const buildRequestLogAttributes = ({
+const buildRequestErrorFingerprint = (
+  error: unknown,
+): RequestErrorFingerprint => {
+  const fingerprint = errorFingerprint(error);
+  return {
+    errorCauseFrame: fingerprint["error.cause.frame"],
+    errorClass: fingerprint["error.class"],
+    errorCode: fingerprint["error.code"],
+    errorFrame: fingerprint["error.frame"],
+    pgCode: fingerprint["error.cause.pg_code"],
+    pgColumn: fingerprint["error.cause.pg_column"],
+    pgConstraint: fingerprint["error.cause.pg_constraint"],
+    pgRoutine: fingerprint["error.cause.pg_routine"],
+    pgSchema: fingerprint["error.cause.pg_schema"],
+    pgSeverity: fingerprint["error.cause.pg_severity"],
+    pgTable: fingerprint["error.cause.pg_table"],
+  };
+};
+
+const buildRequestLogDetails = ({
   durationMs,
   errorType,
-  path,
   request,
   route,
   statusCode,
@@ -193,49 +216,38 @@ const buildRequestLogAttributes = ({
 }: {
   durationMs: number;
   errorType?: string;
-  path: string;
   request: Request;
   route?: string;
   statusCode: number;
   reqCtx?: ReturnType<typeof getRequestContext>;
   elysiaCode?: string;
 }) => {
-  const attributes: Record<string, string | number | boolean> = {
-    "http.method": request.method,
-    "http.route": getRouteName({ path, route }),
-    "http.status_code": statusCode,
-    "request.duration_ms": Math.round(durationMs),
+  const details = {
+    durationMs: Math.round(durationMs),
+    method: request.method,
+    route,
+    statusCode,
   };
 
   if (elysiaCode) {
-    attributes["http.elysia_code"] = elysiaCode;
+    Object.assign(details, { elysiaCode });
   }
 
   if (errorType) {
-    attributes["error.type"] = errorType;
+    Object.assign(details, { errorType });
   }
 
   if (reqCtx?.requestId) {
-    attributes["request.id"] = reqCtx.requestId;
+    Object.assign(details, { requestId: reqCtx.requestId });
   }
 
-  if (reqCtx?.posthogDistinctId) {
-    attributes["posthogDistinctId"] = reqCtx.posthogDistinctId;
-  }
-
-  if (reqCtx?.sessionId) {
-    attributes["sessionId"] = reqCtx.sessionId;
-  }
-
-  if (reqCtx?.organizationId) {
-    attributes["enduser.organization_id"] = reqCtx.organizationId;
-  }
-
-  return attributes;
+  return details;
 };
 
 const api = new Elysia()
-  .onRequest(({ request, set }) => {
+  .onRequest(async (context) => {
+    const { request, set } = context;
+
     // Start the per-request query counter before any handler (or better-auth
     // session lookup) can issue a query, so those queries are attributed to
     // this request. `enterWith` binds the store to this request's async
@@ -255,6 +267,13 @@ const api = new Elysia()
         : undefined;
 
     initRequestContext(request, sessionId);
+    enrichRequestContext(request, {
+      clientIp: resolveClientIp(request, context.server ?? null),
+      signupRateLimitIp: resolveSignupRateLimitClientIp(
+        request,
+        context.server ?? null,
+      ),
+    });
 
     // Stamp the receipt on every response from the central header point, next
     // to the security headers, so REST callers always get an `x-request-id`
@@ -265,6 +284,13 @@ const api = new Elysia()
     if (requestId !== undefined) {
       set.headers[REQUEST_ID_HEADER] = requestId;
     }
+
+    const interceptedResponse = await securityCanaryInterceptor(context);
+    if (interceptedResponse) {
+      return interceptedResponse;
+    }
+
+    return handleMcpAppSandboxRequest(request, set);
   })
   .use(
     cors({
@@ -307,10 +333,9 @@ const api = new Elysia()
     const statusCode = STATUS_BY_ELYSIA_CODE[code] ?? 500;
 
     if (shouldLogRequest(path)) {
-      const attributes = buildRequestLogAttributes({
+      const details = buildRequestLogDetails({
         durationMs: reqCtx ? performance.now() - reqCtx.startTime : 0,
         errorType: errorTag(error),
-        path,
         request,
         route,
         statusCode,
@@ -319,20 +344,25 @@ const api = new Elysia()
       });
 
       if (statusCode >= 500) {
-        Object.assign(attributes, errorFingerprint(error));
-        if (env.isDev && env.DEBUG_UNREDACTED_ERRORS) {
-          Object.assign(attributes, unredactedErrorFields(error));
-        }
-        logger.error("request.failed", attributes);
+        logger.request({
+          ...details,
+          errorFingerprint: buildRequestErrorFingerprint(error),
+          message: "request.failed",
+          severity: "ERROR",
+        });
       } else {
-        logger.warn("request.failed", attributes);
+        logger.request({
+          ...details,
+          message: "request.failed",
+          severity: "WARN",
+        });
       }
     }
 
     captureRequestError(error, {
       request,
       context: {
-        route: getRouteName({ path, route }),
+        route: getRouteName(route),
         method: request.method,
         elysiaCode: String(code),
       },
@@ -362,9 +392,8 @@ const api = new Elysia()
 
     if (shouldLogRequest(path) && reqCtx) {
       const statusCode = typeof set.status === "number" ? set.status : 200;
-      const attributes = buildRequestLogAttributes({
+      const details = buildRequestLogDetails({
         durationMs: performance.now() - reqCtx.startTime,
-        path,
         request,
         route,
         statusCode,
@@ -372,11 +401,23 @@ const api = new Elysia()
       });
 
       if (statusCode >= 500) {
-        logger.error("request.completed", attributes);
+        logger.request({
+          ...details,
+          message: "request.completed",
+          severity: "ERROR",
+        });
       } else if (statusCode >= 400) {
-        logger.warn("request.completed", attributes);
+        logger.request({
+          ...details,
+          message: "request.completed",
+          severity: "WARN",
+        });
       } else {
-        logger.info("request.completed", attributes);
+        logger.request({
+          ...details,
+          message: "request.completed",
+          severity: "INFO",
+        });
       }
     }
 
@@ -385,7 +426,7 @@ const api = new Elysia()
       await analytics.flush().catch((error: unknown) => {
         logger.error("analytics.flush.failed", {
           "error.type": errorTag(error),
-          "http.route": getRouteName({ path, route }),
+          "http.route": getRouteName(route),
         });
       });
     }
@@ -427,6 +468,7 @@ const api = new Elysia()
       .use(agentAuthConfirmRoute),
   )
   .use(healthRoute)
+  .use(wellKnownRoute)
   .use(verifyRoute)
   .use(hostedUsageWebhookRoute)
   .use(mcpRoute)
@@ -466,6 +508,7 @@ const api = new Elysia()
             return (
               isUploadRateLimitedPath(pathname) ||
               isFolioCollabRateLimitedPath(pathname) ||
+              isSkillSourceRateLimitedRequest(req) ||
               isStyleSetUploadRateLimitedRequest(req)
             );
           },
@@ -528,6 +571,7 @@ const api = new Elysia()
       .use(legislationRoute)
       .use(legislationCorpusRoute)
       .use(searchRoute)
+      .use(savedSearchesRoute)
       .use(auditLogsRoute)
       .use(caseLawRoute)
       .use(chatRoute)
@@ -601,6 +645,9 @@ const startServer = async (): Promise<void> => {
   // BullMQ worker for durable account-deletion storage cleanup.
   const accountDeletionCleanupWorker = initAccountDeletionCleanupWorker();
 
+  // BullMQ worker for durable storage cleanup after entity deletion commits.
+  const entityDeletionCleanupWorker = initEntityDeletionCleanupWorker();
+
   // BullMQ worker for style set packages retained past download URL expiry.
   const styleSetPackageCleanupWorker = initStyleSetPackageCleanupWorker();
 
@@ -636,6 +683,7 @@ const startServer = async (): Promise<void> => {
         flowRunWorker.close(),
         fileDerivativeWorker.close(),
         accountDeletionCleanupWorker.close(),
+        entityDeletionCleanupWorker.close(),
         styleSetPackageCleanupWorker.close(),
         reportExportWorker.close(),
       ]),

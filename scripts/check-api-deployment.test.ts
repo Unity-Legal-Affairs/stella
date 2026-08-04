@@ -4,6 +4,155 @@ import { getApiHealthUrl, parseHealthCommit } from "./api-health";
 import { advanceDeploymentStability } from "./check-api-deployment";
 
 describe("API deployment health receipt", () => {
+  test("ties staging promotion to the current health gate", async () => {
+    const workflow = await Bun.file(
+      new URL("../.github/workflows/deploy-staging.yml", import.meta.url),
+    ).text();
+    const healthJobStart = workflow.indexOf("\n  staging-health:\n");
+    const deployJobStart = workflow.indexOf("\n  build-and-deploy:\n");
+    const verifyJobStart = workflow.indexOf("\n  verify-staging:\n");
+    const healthJob = workflow.slice(healthJobStart, deployJobStart);
+    const deployJob = workflow.slice(deployJobStart, verifyJobStart);
+
+    expect(healthJobStart).toBeGreaterThanOrEqual(0);
+    expect(deployJobStart).toBeGreaterThan(healthJobStart);
+    expect(verifyJobStart).toBeGreaterThan(deployJobStart);
+    // The gate only reads: it decides whether to promote, never promotes.
+    // Both delimiters are asserted so a missing block cannot slice to "" and
+    // satisfy the write check by being empty.
+    const permissionsStart = healthJob.indexOf("permissions:");
+    const outputsStart = healthJob.indexOf("outputs:");
+    expect(permissionsStart).toBeGreaterThanOrEqual(0);
+    expect(outputsStart).toBeGreaterThan(permissionsStart);
+    const healthPermissions = healthJob.slice(permissionsStart, outputsStart);
+    expect(healthPermissions).toContain("contents: read");
+    expect(healthPermissions).toContain("deployments: read");
+    expect(healthPermissions).not.toContain("write");
+    expect(healthJob).toContain(
+      "STAGING_HEALTH_URL: https://api-staging.stll.app/health",
+    );
+    expect(healthJob).toContain('readonly NOT_READY_STATUS="not_ready"');
+    expect(healthJob).toContain('readonly READY_STATUS="ready"');
+    expect(healthJob).toContain('status="$NOT_READY_STATUS"');
+    expect(healthJob).toContain('status="$READY_STATUS"');
+    expect(healthJob).toContain(`echo "status=\${status}" >> "$GITHUB_OUTPUT"`);
+    expect(healthJob).toContain(
+      "workflow_dispatch bypasses the gate and deploys anyway.",
+    );
+    // An unreachable environment defers; only a wait past the budget fails.
+    expect(healthJob).toContain("readonly MAX_DEFERRAL_HOURS=");
+    expect(healthJob).toContain("the environment needs attention.");
+    expect(deployJob).toContain("needs: staging-health");
+    expect(deployJob).toContain(
+      "needs.staging-health.outputs.deploy == 'true'",
+    );
+  });
+
+  test("release promotion preserves the full online-migration window", async () => {
+    const [releaseWorkflow, stagingWorkflow, promoteAction] = await Promise.all(
+      [
+        Bun.file(
+          new URL("../.github/workflows/release.yml", import.meta.url),
+        ).text(),
+        Bun.file(
+          new URL("../.github/workflows/deploy-staging.yml", import.meta.url),
+        ).text(),
+        Bun.file(
+          new URL(
+            "../.github/actions/promote-dispatch/action.yml",
+            import.meta.url,
+          ),
+        ).text(),
+      ],
+    );
+    const promoteJobStart = releaseWorkflow.indexOf("\n  promote:\n");
+    const stagingJobStart = releaseWorkflow.indexOf(
+      "\n  promote-staging:\n",
+      promoteJobStart,
+    );
+    const promoteJob = releaseWorkflow.slice(promoteJobStart, stagingJobStart);
+    const webBuildJobStart = releaseWorkflow.indexOf(
+      "\n  prepare-web-image:\n",
+    );
+    const manifestJobStart = releaseWorkflow.indexOf(
+      "\n  manifest:\n",
+      webBuildJobStart,
+    );
+    const webBuildJob = releaseWorkflow.slice(
+      webBuildJobStart,
+      manifestJobStart,
+    );
+    const manifestJob = releaseWorkflow.slice(
+      manifestJobStart,
+      promoteJobStart,
+    );
+
+    expect(promoteJobStart).toBeGreaterThanOrEqual(0);
+    expect(stagingJobStart).toBeGreaterThan(promoteJobStart);
+    expect(webBuildJobStart).toBeGreaterThanOrEqual(0);
+    expect(manifestJobStart).toBeGreaterThan(webBuildJobStart);
+    expect(promoteJob).toContain("timeout-minutes: 360");
+    expect(webBuildJob).toContain("timeout-minutes: 55");
+    expect(webBuildJob).toContain(`-f "inputs[release_sha]=\${RELEASE_SHA}"`);
+    expect(webBuildJob).toContain(`-f "inputs[request_id]=\${REQUEST_ID}"`);
+    expect(webBuildJob).toContain(".releaseSha == $release_sha");
+    expect(webBuildJob).toContain("stella-web.intoto.jsonl");
+    expect(webBuildJob).toContain(
+      "actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d",
+    );
+    expect(webBuildJob).toContain(
+      `candidate_tag="candidate-\${GITHUB_RUN_ID}-\${GITHUB_RUN_ATTEMPT}"`,
+    );
+    expect(webBuildJob).toContain(".targetEnvironment == $target_environment");
+    expect(webBuildJob).not.toContain(`tags+=("\${IMAGE}:latest")`);
+    expect(manifestJob).toContain(
+      "bash .workflow-source/scripts/create-release-manifest.sh",
+    );
+    expect(manifestJob).toContain("Publish immutable release image tags");
+    expect(manifestJob).toContain(
+      `Immutable image tag \${image}:\${tag} points to a different digest.`,
+    );
+    expect(manifestJob).toContain('"STELLA_COMMIT_SHA=" + $commit');
+    expect(manifestJob.indexOf("Publish GitHub release manifest")).toBeLessThan(
+      manifestJob.indexOf("Advance stable image tags"),
+    );
+    expect(releaseWorkflow).toContain(
+      `group: release-\${{ github.event_name == 'workflow_dispatch' && inputs.release_ref || github.ref_name }}`,
+    );
+    expect(releaseWorkflow).toContain(
+      "needs: [resolve, build, prepare-web-image, smoke]",
+    );
+    expect(releaseWorkflow.match(/web-image-digest:/gu)).toHaveLength(2);
+    expect(promoteAction).toContain("readonly TOKEN_REFRESH_SECONDS=2700");
+    expect(promoteAction).toContain("readonly TOKEN_REFRESH_ATTEMPTS=20");
+    expect(promoteAction).toContain("refresh_app_token");
+    expect(promoteAction).toContain(
+      "now - token_refreshed_at >= TOKEN_REFRESH_SECONDS",
+    );
+    expect(promoteAction).toContain('"/installation/token"');
+    expect(promoteAction).toContain("retaining the current token and retrying");
+    expect(promoteAction).toContain(`echo "::add-mask::\${jwt}" >&2`);
+    expect(promoteAction).toContain(`printf '%s\\n' "$APP_PRIVATE_KEY"`);
+    expect(
+      promoteAction.match(/Authorization: Bearer \$\{jwt\}/gu),
+    ).toHaveLength(2);
+    expect(promoteAction).not.toContain("gh run watch");
+    expect(promoteAction).toContain(
+      `run_url="https://github.com/\${INFRA_REPO}/actions/runs/\${run_id}"`,
+    );
+    expect(promoteAction).not.toContain(`Check https://github.com/\${run_url}`);
+    expect(promoteAction).toContain(
+      `-f "inputs[web_image_digest]=\${WEB_IMAGE_DIGEST}"`,
+    );
+    expect(promoteAction).toContain(
+      "Tagged frontend promotions require a prebuilt web image digest.",
+    );
+    expect(promoteJob).not.toContain("steps.app-token.outputs.token");
+    expect(stagingWorkflow).not.toContain(
+      "steps.deployment-token.outputs.token",
+    );
+  });
+
   test("preserves a configured API path prefix", () => {
     expect(getApiHealthUrl("https://example.com/api").toString()).toBe(
       "https://example.com/api/health",
@@ -11,6 +160,9 @@ describe("API deployment health receipt", () => {
     expect(getApiHealthUrl("https://example.com").toString()).toBe(
       "https://example.com/health",
     );
+    expect(
+      getApiHealthUrl("https://example.com", "version.json").toString(),
+    ).toBe("https://example.com/version.json");
   });
 
   test("accepts only a full lowercase commit SHA", () => {

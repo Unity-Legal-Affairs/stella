@@ -5,8 +5,9 @@
 // `tools/list`; both call sites share this one function and the same
 // annotations, so the trees are byte-identical.
 
+import { TaggedError, type TaggedErrorClass } from "better-result";
+
 import { RESERVED_FLAGS, RESERVED_TOP_LEVEL_NAMES } from "./annotations.js";
-import { CliBaseError } from "./auth/errors.js";
 import { flagKey } from "./flag-name.js";
 import type {
   FlagSpec,
@@ -64,11 +65,14 @@ const propertyMap = (schema: PropSchema): Record<string, PropSchema> => {
 };
 
 /** Hard codegen failure: a collision or reserved-name violation (spec S1). */
-export class RouteGenerationError extends CliBaseError<"RouteGenerationError"> {
-  override readonly name = "RouteGenerationError";
+const RouteGenerationErrorBase: TaggedErrorClass<"RouteGenerationError"> =
+  TaggedError("RouteGenerationError");
 
+export class RouteGenerationError extends RouteGenerationErrorBase<{
+  message: string;
+}> {
   constructor(message: string) {
-    super("RouteGenerationError", message);
+    super({ message });
   }
 }
 
@@ -502,6 +506,8 @@ const leafSpecsForTool = ({
   const destructiveHint = listing.annotations?.destructiveHint === true;
 
   const command = annotation?.command ?? heuristicCommandPath(listing.name);
+  const additionalScopes = annotation?.additionalScopes;
+  const requestTimeoutMs = annotation?.requestTimeoutMs;
   const scope = annotation ? scopeOf(annotation) : undefined;
   const itemsKey = annotation?.itemsKey;
   const windowedText = annotation?.windowedText === true;
@@ -569,6 +575,8 @@ const leafSpecsForTool = ({
         ...(itemsKey === undefined ? {} : { itemsKey }),
         destructive: sub?.destructive === true || destructiveHint,
         ...(confirmPassthrough === undefined ? {} : { confirmPassthrough }),
+        ...(additionalScopes === undefined ? {} : { additionalScopes }),
+        ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
         ...(scope === undefined ? {} : { scope }),
         inputSchema: schema,
       });
@@ -594,6 +602,8 @@ const leafSpecsForTool = ({
       ...(itemsKey === undefined ? {} : { itemsKey }),
       destructive: destructiveHint,
       ...(confirmPassthrough === undefined ? {} : { confirmPassthrough }),
+      ...(additionalScopes === undefined ? {} : { additionalScopes }),
+      ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
       ...(scope === undefined ? {} : { scope }),
       inputSchema: schema,
     },

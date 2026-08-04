@@ -81,11 +81,8 @@ import {
   type PositionErrors,
   type PositionSeverity,
   type TierRule,
-} from "@/routes/_protected.knowledge/-components/playbook-types";
-import {
-  clauseDetailOptions,
-  clausesOptions,
-} from "@/routes/_protected.knowledge/-queries";
+} from "@/lib/knowledge/playbook-types";
+import { clauseDetailOptions, clausesOptions } from "@/lib/knowledge/queries";
 
 // Drag payload shared by the position cards; the parent list interprets a drop
 // as "move dragged sourceId to target sourceId's index".

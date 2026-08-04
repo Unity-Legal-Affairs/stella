@@ -36,15 +36,35 @@ const BOOTSTRAP_COVERED_RLS_MIGRATIONS = new Set([
   "20260509220000_disabled-native-tools",
 ]);
 
-// Post-bootstrap RLS tables that are global and read-only for `stella`
-// (like the other case_law_* tables, which predate the bootstrap). These
-// correctly grant stella SELECT only, not full DML.
+// Post-bootstrap RLS tables that are read-only for `stella`. Global legal-data
+// tables and derived preview passages are maintained by privileged background
+// writers, so the request role correctly receives SELECT only, not full DML.
 const POST_BOOTSTRAP_SELECT_ONLY_TABLES = new Set([
+  "search_document_preview_passages",
+  "contact_search_document_preview_passages",
+  "workspace_search_document_preview_passages",
+  "chat_thread_search_preview_passages",
+  "case_law_search_document_preview_passages",
   "case_law_index_jobs",
+  "case_law_corpus_index_backfills",
+  "case_law_corpus_index_source_reconciliations",
+  "case_law_corpus_index_writer_leases",
+  "case_law_corpus_index_projections",
   "legislation_sources",
   "legislation_documents",
   "legislation_search_documents",
   "legislation_index_jobs",
+  // Crawl bookkeeping: the app role reads coverage for reporting, only
+  // ingestion writes it.
+  "case_law_coverage_slices",
+]);
+
+// Internal handoff tables whose scoped role needs INSERT but not table-wide
+// SELECT. Privileged workers own reads; a table may additionally grant a
+// narrowly scoped transition such as deleting an exact cleanup tombstone.
+const POST_BOOTSTRAP_SCOPED_HANDOFF_TABLES = new Set([
+  "buffer_object_cleanup_intents",
+  "entity_deletion_cleanup_requests",
 ]);
 
 // Post-bootstrap control-plane auth tables that deny `stella` entirely
@@ -61,6 +81,7 @@ const POST_BOOTSTRAP_DENY_STELLA_TABLES = new Set([
   // nor widen a key's permissions, so every access goes through better-auth on
   // the owner connection.
   "apikey",
+  "case_law_corpus_upload_intents",
 ]);
 
 const SQL_IDENTIFIER_PATTERN =
@@ -103,6 +124,26 @@ const sqlStatements = (contents: string): string[] =>
 const isStellaIdentifier = (value: string): boolean =>
   value.trim().toLowerCase() === "stella" ||
   value.trim().toLowerCase() === '"stella"';
+
+type GrantsRequiredPrivilegesOptions = {
+  table: string;
+  privileges: Set<string>;
+  grantsTableDml: boolean;
+};
+
+const grantsRequiredPrivileges = ({
+  table,
+  privileges,
+  grantsTableDml,
+}: GrantsRequiredPrivilegesOptions): boolean => {
+  if (POST_BOOTSTRAP_SELECT_ONLY_TABLES.has(table)) {
+    return privileges.has("select");
+  }
+  if (POST_BOOTSTRAP_SCOPED_HANDOFF_TABLES.has(table)) {
+    return privileges.has("insert");
+  }
+  return grantsTableDml;
+};
 
 const migrationSqlFiles = () =>
   readdirSync(DRIZZLE_DIR, { withFileTypes: true })
@@ -161,12 +202,10 @@ const explicitStellaGrantTables = (statement: string): string[] => {
     (name) => name !== "public",
   );
 
-  // Normal post-bootstrap tables must grant stella full DML; explicit
-  // read-only global tables only need SELECT.
+  // Normal post-bootstrap tables grant full DML; explicit internal categories
+  // enforce their narrower request-role surface.
   return tables.filter((table) =>
-    POST_BOOTSTRAP_SELECT_ONLY_TABLES.has(table)
-      ? privileges.has("select")
-      : grantsTableDml,
+    grantsRequiredPrivileges({ table, privileges, grantsTableDml }),
   );
 };
 

@@ -92,7 +92,21 @@ export type McpToolAccess = (typeof MCP_TOOL_ACCESS_LEVELS)[number];
 
 export type McpToolDefinition = {
   access: McpToolAccess;
-  annotations?: McpTool["annotations"];
+  /**
+   * Extra grants required in addition to the primary `scope`. Discovery and
+   * dispatch both enforce this list centrally, so compound operations cannot
+   * be advertised or called with only one half of their consent contract.
+   */
+  additionalScopes?: readonly ToolScope[];
+  /**
+   * MCP client-hint annotations. Required, and `title` is required within it
+   * (no default), so a new tool cannot land without a human-readable display
+   * name; clients render `title` in tool listings and consent prompts where
+   * the `verb_noun` wire name would read poorly. The behavioural hints stay
+   * optional; the registry-quality suite enforces their coherence and the
+   * title style.
+   */
+  annotations: NonNullable<McpTool["annotations"]> & { title: string };
   anonymized: McpAnonymizedPolicy;
   description: string;
   /**
@@ -128,6 +142,9 @@ export type McpCliDiscriminatorSubcommand = {
 
 export type McpCliToolAnnotation = {
   command: readonly string[];
+  additionalScopes?: readonly McpCliToolScope[];
+  /** API-owned finite transport deadline projected into generated CLI leaves. */
+  requestTimeoutMs?: number;
   excluded?: true;
   scope?: McpCliToolScope;
   itemsKey?: string;
@@ -260,7 +277,7 @@ export type McpToolHandler = ({
 }: {
   args: Record<string, unknown>;
   context: McpRequestContext;
-}) => Promise<McpToolResponse>;
+}) => McpToolResponse | Promise<McpToolResponse>;
 
 export type McpToolHandlerMap<
   TDefinitions extends readonly McpToolDefinition[],

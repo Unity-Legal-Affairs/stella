@@ -7,12 +7,13 @@ import type { Transaction } from "@/api/db/root";
 import { rootDb } from "@/api/db/root";
 import type { SafeDb, SafeDbError } from "@/api/db/safe-db";
 import { flowRuns, flowRunSteps } from "@/api/db/schema";
-import { createEntityFromBuffer } from "@/api/handlers/entities/create-from-buffer";
 import { resolveCaching } from "@/api/lib/ai-config";
 import { loadOrgAIConfig } from "@/api/lib/ai-config-loader";
 import { createAuditRecorder } from "@/api/lib/audit-log";
+import type { AuditExecutionContext } from "@/api/lib/audit-log";
 import type { SafeId } from "@/api/lib/branded-types";
 import { decryptContent } from "@/api/lib/content-encryption";
+import { createEntityFromBuffer } from "@/api/lib/entities/create-from-buffer";
 import { HandlerError } from "@/api/lib/errors/tagged-errors";
 import {
   broadcastFlowRunUpdate,
@@ -60,7 +61,7 @@ const FLOW_AI_GENERATION_TIMEOUT_MS = 3 * 60 * 1000;
 export class FlowStepError extends TaggedError("FlowStepError")<{
   message: string;
   cause?: unknown;
-}>() {}
+}> {}
 
 // ── Per-job step execution (queue side) ─────────────────
 
@@ -496,7 +497,43 @@ const runCreateDocumentStep = async ({
     });
   }
 
+  const trigger = ((): AuditExecutionContext["trigger"] => {
+    switch (run.triggerSource.type) {
+      case "manual":
+        return {
+          source: "action",
+          sourceId: run.id,
+          type: "user_dispatch",
+          userId: actorUserId,
+        };
+      case "schedule":
+        return {
+          ownerUserId: actorUserId,
+          source: "flow",
+          sourceId: run.definitionId ?? run.id,
+          type: "schedule",
+        };
+      case "file-upload":
+        return { source: "file-upload", type: "system" };
+      default: {
+        const exhaustive: never = run.triggerSource;
+        return exhaustive;
+      }
+    }
+  })();
+
   const recordAuditEvent = createAuditRecorder({
+    execution: {
+      performer: {
+        type: "agent",
+        id: run.definitionId
+          ? `flow:${run.definitionId}`
+          : `flow-run:${run.id}`,
+        name: run.definitionSnapshot.name,
+      },
+      trigger,
+      runId: run.id,
+    },
     organizationId,
     workspaceId: run.workspaceId,
     userId: actorUserId,

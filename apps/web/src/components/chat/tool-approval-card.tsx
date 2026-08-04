@@ -43,19 +43,19 @@ import {
   getReadableInputRows,
   humanizeIdentifier,
 } from "@/components/chat/tool-approval-summary";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
+import {
+  emptyColor,
+  resolveOptionColor,
+} from "@/components/workspaces/property-utils";
 import { useMountEffect } from "@/hooks/use-effect";
 import type { DocxEditRepresentation } from "@/lib/chat-edit-mode";
 import { DOCX_EDIT_REPRESENTATION } from "@/lib/chat-edit-mode";
 import { detached } from "@/lib/detached";
+import { mcpConnectorsOptions } from "@/lib/knowledge/queries";
 import { sanitizeHref } from "@/lib/sanitize-href";
 import type { WorkspaceProperty } from "@/lib/types";
-import { mcpConnectorsOptions } from "@/routes/_protected.knowledge/-queries";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
-import {
-  emptyColor,
-  resolveOptionColor,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/utils";
-import { propertiesKeys } from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
+import { propertiesKeys } from "@/lib/workspaces/queries/properties";
 
 type UpdateEntityFieldsInput = ChatUITools["update-entity-fields"]["input"];
 type ActiveDocxEditInput = ChatUITools["apply-active-docx-edits"]["input"];
@@ -67,18 +67,20 @@ type EditWorkspaceDocumentOutput =
   ChatUITools["edit_workspace_document"]["output"];
 
 const getApprovalId = (part: ApprovalToolPart): string | null => {
-  switch (part.state) {
+  const { state } = part;
+  switch (state) {
     case "awaiting-input":
     case "input-complete":
     case "input-streaming":
       return null;
     case "approval-requested":
     case "approval-responded":
-      return part.approval.id;
     case "complete":
+    case "error":
       return part.approval.id;
     default:
-      return null;
+      state satisfies never;
+      return panic("Unhandled approval tool state");
   }
 };
 
@@ -593,7 +595,7 @@ export const ToolApprovalCard = ({
           if (!entityIdMatch) {
             return;
           }
-          const inspector = useInspectorStore.getState();
+          const inspector = useInspectorTabsStore.getState();
           const tab = inspector.tabs.find(
             (candidate) =>
               candidate.type === "pdf" && candidate.entityId === entityIdMatch,

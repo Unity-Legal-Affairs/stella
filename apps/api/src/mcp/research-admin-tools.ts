@@ -11,6 +11,7 @@ import {
 } from "@stll/boe";
 import { roles } from "@stll/permissions";
 
+import { DOCUMENT_PROCESSING_MODES } from "@/api/db/schema";
 import {
   type AuditLogFilter,
   queryAuditLogPage,
@@ -25,7 +26,10 @@ import {
   brandPersistedUserId,
   brandPersistedWorkspaceId,
 } from "@/api/lib/safe-id-boundaries";
-import type { McpRequestContext } from "@/api/mcp/context";
+import {
+  bindApprovedMcpAuditContext,
+  type McpRequestContext,
+} from "@/api/mcp/context";
 import type { McpToolDefinition, McpToolHandler } from "@/api/mcp/tool-types";
 import { defineMcpToolSet } from "@/api/mcp/tool-types";
 import {
@@ -72,7 +76,11 @@ const MANAGE_ORG_ACTIONS = [
 
 export const RESEARCH_ADMIN_TOOL_DEFINITIONS = [
   {
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    annotations: {
+      title: "Search legislation",
+      readOnlyHint: true,
+      openWorldHint: true,
+    },
     description:
       "Search and read Spanish consolidated legislation from the BOE. In " +
       "search mode, pass query (free text) and/or filters (title, " +
@@ -145,7 +153,11 @@ export const RESEARCH_ADMIN_TOOL_DEFINITIONS = [
     scope: "stella:read",
   },
   {
-    annotations: { readOnlyHint: true, openWorldHint: false },
+    annotations: {
+      title: "List audit log",
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
     description:
       "Read the organization's audit trail (compliance view). Returns audit " +
       "entries newest first, each with its action, resource type and id, actor " +
@@ -192,12 +204,10 @@ export const RESEARCH_ADMIN_TOOL_DEFINITIONS = [
   },
   {
     description:
-      "Administer the organization (owner/admin actions). Set action to " +
-      "add_member or remove_member to add/remove a workspace member (matter_id " +
-      "and user_id required); or update_org_settings to change non-secret " +
-      "organization settings: matter_number_pattern with matter_number_padding " +
-      "(sent together) and/or prompt_caching_enabled. Provider API keys and " +
-      "other secrets are managed only in the dashboard, not here.",
+      "Manage organization members and non-secret settings. Member actions " +
+      "require matter_id and user_id. update_org_settings controls matter " +
+      "numbering, prompt caching, and document processing. Manage provider " +
+      "secrets in the dashboard.",
     inputSchema: {
       type: "object",
       properties: {
@@ -222,6 +232,10 @@ export const RESEARCH_ADMIN_TOOL_DEFINITIONS = [
           description:
             "Toggle AI prompt caching for the organization (update_org_settings)",
         },
+        document_processing_mode: enumProp(
+          "Set automatic PDF searchable-text extraction for the organization (update_org_settings)",
+          DOCUMENT_PROCESSING_MODES,
+        ),
         confirm: confirmProp(
           "Required for the remove_member action: must be true to remove a " +
             "member (an irreversible action). Set it only after a human user " +
@@ -230,7 +244,11 @@ export const RESEARCH_ADMIN_TOOL_DEFINITIONS = [
       },
       required: ["action"],
     },
-    annotations: { idempotentHint: false, openWorldHint: false },
+    annotations: {
+      title: "Manage organization",
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     access: "write",
     anonymized: { exposure: "excluded", reason: "write" },
     name: "manage_organization",
@@ -576,6 +594,7 @@ const manageOrganizationArgsSchema = v.pipe(
       v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(6)),
     ),
     prompt_caching_enabled: v.optional(v.boolean()),
+    document_processing_mode: v.optional(v.picklist(DOCUMENT_PROCESSING_MODES)),
     // The CLI's --yes flow injects `confirm: true` for the destructive
     // remove_member subcommand; the strictObject would otherwise reject it.
     // Other actions accept but ignore it.
@@ -607,13 +626,15 @@ const manageOrganizationArgsSchema = v.pipe(
       ["matter_number_pattern"],
       ["matter_number_padding"],
       ["prompt_caching_enabled"],
+      ["document_processing_mode"],
     ],
     (i) =>
       i.action === "update_org_settings" ||
       (i.matter_number_pattern === undefined &&
         i.matter_number_padding === undefined &&
-        i.prompt_caching_enabled === undefined),
-    "matter_number_pattern, matter_number_padding, and prompt_caching_enabled apply only to update_org_settings",
+        i.prompt_caching_enabled === undefined &&
+        i.document_processing_mode === undefined),
+    "matter_number_pattern, matter_number_padding, prompt_caching_enabled, and document_processing_mode apply only to update_org_settings",
   ),
   // matter_id/user_id are meaningless for an org-settings update.
   v.partialCheck(
@@ -630,12 +651,14 @@ const manageOrganizationArgsSchema = v.pipe(
       ["matter_number_pattern"],
       ["matter_number_padding"],
       ["prompt_caching_enabled"],
+      ["document_processing_mode"],
     ],
     (i) =>
       i.action !== "update_org_settings" ||
       i.matter_number_pattern !== undefined ||
       i.matter_number_padding !== undefined ||
-      i.prompt_caching_enabled !== undefined,
+      i.prompt_caching_enabled !== undefined ||
+      i.document_processing_mode !== undefined,
     "Provide at least one setting to change for update_org_settings",
   ),
   // The matter-number pattern and padding are a unit (mirrors the backing).
@@ -719,7 +742,7 @@ const handleManageOrganizationTool: McpToolHandler = async ({
       issues: parsed.issues,
       message: crossFieldOrGeneric(
         parsed.issues,
-        "Invalid input: expected { action: 'add_member'|'remove_member'|'update_org_settings', matter_id?, user_id?, matter_number_pattern?, matter_number_padding?, prompt_caching_enabled? }",
+        "Invalid input: expected { action: 'add_member'|'remove_member'|'update_org_settings', matter_id?, user_id?, matter_number_pattern?, matter_number_padding?, prompt_caching_enabled?, document_processing_mode? }",
       ),
     });
   }
@@ -750,7 +773,7 @@ const handleManageOrganizationTool: McpToolHandler = async ({
     }
     // matter_id and user_id are guaranteed present by the schema.
     return await handleRemoveMember({
-      context,
+      context: bindApprovedMcpAuditContext(context),
       matterId: input.matter_id ?? "",
       userId: input.user_id ?? "",
     });
@@ -778,6 +801,9 @@ const handleManageOrganizationTool: McpToolHandler = async ({
         ...(input.prompt_caching_enabled === undefined
           ? {}
           : { promptCachingEnabled: input.prompt_caching_enabled }),
+        ...(input.document_processing_mode === undefined
+          ? {}
+          : { documentProcessingMode: input.document_processing_mode }),
       },
     }),
   );

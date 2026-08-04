@@ -8,6 +8,7 @@ import { useTranslations } from "use-intl";
 
 import { stellaToast } from "@stll/ui/components/toast";
 
+import { useStartWorkflow } from "@/components/workspaces/hooks/use-start-workflow";
 import { MAX_PARALLEL_FILE_UPLOADS } from "@/consts";
 import type { DroppedFileTree } from "@/hooks/external-file-drop.logic";
 import { useAnalytics } from "@/lib/analytics/provider";
@@ -18,18 +19,20 @@ import { ClientOperationError } from "@/lib/errors/client";
 import { fetchWithTimeout } from "@/lib/fetch";
 import { toSafeId } from "@/lib/safe-id";
 import { UploadQueue } from "@/lib/upload-queue";
+import { entitiesKeys } from "@/lib/workspaces/queries/entities";
+import {
+  propertiesKeys,
+  propertiesOptions,
+} from "@/lib/workspaces/queries/properties";
 import {
   buildDroppedFolderUploadPlan,
   type DroppedFolderUploadPlan,
 } from "@/routes/_protected.workspaces/$workspaceId/-hooks/create-file-tree-upload.logic";
-import { buildEntityCreatePresignPayload } from "@/routes/_protected.workspaces/$workspaceId/-hooks/create-file-upload-payload.logic";
-import { useStartWorkflow } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-start-workflow";
-import { entitiesKeys } from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
 import {
-  propertiesKeys,
-  propertiesOptions,
-} from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
-import { workspacesKeys } from "@/routes/_protected.workspaces/-queries";
+  buildEntityCreateInvalidationPayload,
+  buildEntityCreatePresignPayload,
+  entityCreateLocalInvalidationKeys,
+} from "@/routes/_protected.workspaces/$workspaceId/-hooks/create-file-upload-payload.logic";
 
 const MAX_DISPLAYED_FAILURES = 5;
 // Matches the versions-sidebar PUT-to-S3 upload budget (same flow, uploaded
@@ -354,7 +357,7 @@ const uploadPreparedFileEntity = async ({
 
   // 4. Finalize.
   const finalize = await wsClient({ uploadId }).finalize.post(
-    { queryKey: entitiesKeys.all(workspaceId) },
+    buildEntityCreateInvalidationPayload(workspaceId),
     { fetch: { signal } },
   );
   if (finalize.error) {
@@ -746,15 +749,12 @@ export const useCreateFileEntities = (workspaceId: string) => {
     },
     onSettled: () => {
       detached(
-        queryClient.invalidateQueries({
-          queryKey: entitiesKeys.all(workspaceId),
-        }),
-        "onSettled",
-      );
-      detached(
-        queryClient.invalidateQueries({
-          queryKey: workspacesKeys.overview(workspaceId),
-        }),
+        Promise.all(
+          entityCreateLocalInvalidationKeys(workspaceId).map(
+            async (key) =>
+              await queryClient.invalidateQueries({ queryKey: key }),
+          ),
+        ),
         "onSettled",
       );
     },

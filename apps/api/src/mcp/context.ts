@@ -8,8 +8,9 @@ import {
   createMembershipSafeDb,
   createMembershipScopedDb,
 } from "@/api/db/scoped";
+import { resolveAgentAuditExecution } from "@/api/lib/agent-audit-principal";
 import { createAuditRecorder } from "@/api/lib/audit-log";
-import type { AuditRecorder } from "@/api/lib/audit-log";
+import type { AuditExecutionContext, AuditRecorder } from "@/api/lib/audit-log";
 import { resolveMemberAuthorization } from "@/api/lib/auth";
 import type { AccessibleWorkspace } from "@/api/lib/auth";
 import type { SafeId } from "@/api/lib/branded-types";
@@ -37,6 +38,7 @@ export type McpOperationDatabaseScope = {
 };
 
 export type McpRequestContext = {
+  auditExecution?: AuditExecutionContext;
   accessibleWorkspaceIds: SafeId<"workspace">[];
   accessibleWorkspaceIdSet: ReadonlySet<string>;
   /**
@@ -54,6 +56,8 @@ export type McpRequestContext = {
    * `accessibleWorkspaceStatusById` and do not read it.
    */
   accessibleWorkspaces: AccessibleWorkspace[];
+  /** Resolved transport client IP used by shared gateway/REST abuse budgets. */
+  clientIp?: string | null;
   /**
    * OAuth scopes granted to this session (the access token's `scope` claim).
    * `invoke_capability` gates each capability on its catalog scope against this
@@ -103,6 +107,48 @@ export type McpRequestContext = {
   userId: SafeId<"user">;
 };
 
+/**
+ * Bind a confirmed MCP call to the authenticated user's approval. Transport
+ * contexts carry the request needed to rebuild the recorder; chat contexts
+ * already receive a recorder whose approval was resolved by the chat gate.
+ */
+export const bindApprovedMcpAuditContext = (
+  context: McpRequestContext,
+): McpRequestContext => {
+  if (context.request === undefined) {
+    return context;
+  }
+
+  const currentExecution = context.auditExecution;
+  const auditExecution: AuditExecutionContext = {
+    performer: currentExecution?.performer ?? {
+      id: context.userId,
+      type: "user",
+    },
+    trigger: currentExecution?.trigger ?? { type: "direct" },
+    ...(currentExecution?.runId === undefined
+      ? {}
+      : { runId: currentExecution.runId }),
+    approval: {
+      status: "approved",
+      userId: context.userId,
+    },
+  };
+
+  return {
+    ...context,
+    auditExecution,
+    recordAuditEvent: createAuditRecorder({
+      execution: auditExecution,
+      organizationId: context.organizationId,
+      request: context.request,
+      server: null,
+      userId: context.userId,
+      workspaceId: null,
+    }),
+  };
+};
+
 type LoadAccessibleMcpWorkspacesOptions = {
   organizationId: SafeId<"organization">;
   scopedDb: ScopedDb;
@@ -127,11 +173,16 @@ export const loadAccessibleMcpWorkspaces = async ({
 
 export const resolveMcpSessionContext = async (
   session: McpSession,
-  { request }: { request: Request },
+  { clientIp = null, request }: { clientIp?: string | null; request: Request },
 ): Promise<McpRequestContext> => {
   const { organizationId, userId } = brandActorSessionIdentity({
     organizationId: session.organizationId,
     userId: session.userId,
+  });
+  const auditExecution = await resolveAgentAuditExecution({
+    credential: session.credential,
+    organizationId,
+    userId,
   });
 
   const authorization = await resolveMemberAuthorization({
@@ -211,12 +262,14 @@ export const resolveMcpSessionContext = async (
         ).map((handler) => handler.slug);
 
   return {
+    ...(auditExecution ? { auditExecution } : {}),
     accessibleWorkspaceIds: usableWorkspaceIds,
     accessibleWorkspaceIdSet: workspaceAccessBoundary.accessibleWorkspaceIdSet,
     accessibleWorkspaceStatusById: new Map(
       usableWorkspaces.map((workspace) => [workspace.id, workspace.status]),
     ),
     accessibleWorkspaces: usableWorkspaces,
+    clientIp,
     createOperationDatabaseScope,
     enabledRegistrySlugs,
     grantedScopes: session.scopes,
@@ -224,6 +277,7 @@ export const resolveMcpSessionContext = async (
     organizationId,
     request,
     recordAuditEvent: createAuditRecorder({
+      ...(auditExecution ? { execution: auditExecution } : {}),
       organizationId,
       request,
       server: null,

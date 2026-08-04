@@ -7,9 +7,9 @@ import { Button } from "@stll/ui/components/button";
 import { DirectionalIcon } from "@stll/ui/components/directional-icon";
 import { cn } from "@stll/ui/lib/utils";
 
-import { useInspectorStore } from "@/components/inspector/inspector-store";
+import { InlineEdit } from "@/components/inline-edit";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import { MatterIcon } from "@/components/matter-icon";
-import { InlineEdit } from "@/routes/_protected.workspaces/$workspaceId/-components/inline-edit";
 
 /**
  * Shared header strip used at the top of every inspector tab —
@@ -97,7 +97,7 @@ export const InspectorTabHeader = ({
   onClose,
 }: InspectorTabHeaderProps) => {
   const tCommon = useTranslations("common");
-  const setMinimized = useInspectorStore((s) => s.setMinimized);
+  const setMinimized = useInspectorTabsStore((s) => s.setMinimized);
 
   return (
     <div

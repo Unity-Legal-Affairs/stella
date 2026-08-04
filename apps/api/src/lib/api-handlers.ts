@@ -16,7 +16,7 @@ import type { UsageActionType, UsageServiceTier } from "@/api/db/schema";
 import { env } from "@/api/env";
 import type { OrgAIConfig } from "@/api/lib/ai-config";
 import { captureRequestError } from "@/api/lib/analytics/capture";
-import type { AuditRecorder } from "@/api/lib/audit-log";
+import type { AuditExecutionContext, AuditRecorder } from "@/api/lib/audit-log";
 import type { AccessibleWorkspace } from "@/api/lib/auth";
 import type { SafeId } from "@/api/lib/branded-types";
 import {
@@ -351,6 +351,7 @@ type BaseHandlerContext<TConfig extends HandlerConfig = HandlerConfig> =
      * shared copy/move utilities).
      */
     createAuditRecorder: (opts?: {
+      execution?: AuditExecutionContext;
       workspaceId?: SafeId<"workspace"> | null;
     }) => AuditRecorder;
   };
@@ -855,7 +856,25 @@ export const createSafeHandler = <
   config: TConfig,
   handler: SafeHandlerFn<WorkspaceHandlerContext<TConfig>, TResult>,
 ): SafeHandlerDefinition<TConfig, WorkspaceHandlerContext<TConfig>, TResult> =>
-  createSafeScopedHandler(config, handler);
+  createSafeScopedHandler(config, (ctx) => {
+    // Elysia may expand validateAuth again after validateWorkspaceAccess when a
+    // route also declares permissions. That later resolve carries the root
+    // recorder and can overwrite the recorder bound by the workspace macro.
+    // Rebind here, where the context type proves workspaceId was validated, so
+    // workspace mutations cannot emit organization-only audit rows regardless
+    // of macro composition order.
+    // Direct unit tests below the Elysia boundary may intentionally use a
+    // minimal raw context. Real WorkspaceHandlerContext values always carry
+    // this factory; keep those fixture-only omissions from changing handler
+    // behavior while still rebinding every framework-produced request.
+    const recorderFactory: unknown = Reflect.get(ctx, "createAuditRecorder");
+    if (typeof recorderFactory === "function") {
+      ctx.recordAuditEvent = ctx.createAuditRecorder({
+        workspaceId: ctx.workspaceId,
+      });
+    }
+    return handler(ctx);
+  });
 
 export const createSafeSessionHandler = <
   TConfig extends SessionHandlerConfig,
@@ -961,6 +980,49 @@ const getErrorStatusCode = (error: Error): number | undefined => {
   return undefined;
 };
 
+/** How far up `.cause` the structural walk goes. */
+const MAX_CAUSE_DEPTH = 3;
+
+/**
+ * Structural attributes for an error's `.cause` chain, so nested
+ * wrappers do not hide the underlying failure.
+ *
+ * Each level records its type and, when it carries one, its status.
+ * The status is what makes the level useful: a `toXError(cause)`
+ * wrapper and its cause are usually both `HandlerError`, so type
+ * alone repeats one uninformative string while the wrapper's own
+ * generic 500 is the only status logged. The cause's 403
+ * (misconfiguration), 400 (unsupported input) or 502 (upstream run
+ * failure) is what names the failure. A status is a number, so this
+ * stays as non-PII as the rest of the sink.
+ */
+export const errorCauseChainAttributes = (
+  error: Error,
+): Record<string, string | number> => {
+  const attributes: Record<string, string | number> = {};
+  const seen = new WeakSet<object>([error]);
+  let cause = safeErrorCause(error);
+  let depth = 1;
+
+  while (
+    cause instanceof Error &&
+    depth <= MAX_CAUSE_DEPTH &&
+    !seen.has(cause)
+  ) {
+    seen.add(cause);
+    const prefix = depth === 1 ? "error.cause" : `error.cause${depth}`;
+    attributes[`${prefix}.type`] = errorTag(cause);
+    const causeStatusCode = getErrorStatusCode(cause);
+    if (causeStatusCode !== undefined) {
+      attributes[`${prefix}.status_code`] = causeStatusCode;
+    }
+    cause = safeErrorCause(cause);
+    depth++;
+  }
+
+  return attributes;
+};
+
 const logAndCaptureSafeError = ({
   request,
   route,
@@ -984,18 +1046,7 @@ const logAndCaptureSafeError = ({
     if (errorStatusCode !== undefined) {
       attributes["error.status_code"] = errorStatusCode;
     }
-    // Walk up to three levels of `.cause` so nested wrappers do not
-    // hide the underlying failure type.
-    const seen = new WeakSet<object>([error]);
-    let cause = safeErrorCause(error);
-    let depth = 1;
-    while (cause instanceof Error && depth <= 3 && !seen.has(cause)) {
-      seen.add(cause);
-      const prefix = depth === 1 ? "error.cause" : `error.cause${depth}`;
-      attributes[`${prefix}.type`] = errorTag(cause);
-      cause = safeErrorCause(cause);
-      depth++;
-    }
+    Object.assign(attributes, errorCauseChainAttributes(error));
   }
 
   // 5xx are the un-diagnosable class: the message and stack are

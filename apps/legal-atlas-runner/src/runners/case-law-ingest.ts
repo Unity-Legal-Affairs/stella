@@ -21,16 +21,21 @@ import { panic } from "better-result";
 
 import { caseLawIngestionEvents } from "@/api/db/schema";
 import { corpusStorageMode, envBase } from "@/api/env-base";
-import { tryRecomputeCitationAuthorityForAll } from "@/api/handlers/case-law/citation-authority";
+import {
+  hasResolvedCitations,
+  latestCitationAuthorityRecomputeAt,
+  tryRecomputeCitationAuthorityForAll,
+} from "@/api/handlers/case-law/citation-authority";
 import { ADAPTER_KEYS, MAX_CYCLE_MS } from "@/api/handlers/case-law/consts";
 import { backfillCorpusIndex } from "@/api/handlers/case-law/corpus-index";
 import { getAdapter } from "@/api/handlers/case-law/ingestion/adapters/adapter-registry";
 import { runIngestionPipeline } from "@/api/handlers/case-law/ingestion/pipeline";
-import { backfillSearchIndex } from "@/api/handlers/case-law/search-index";
 import { backfillLegislationCorpusIndex } from "@/api/handlers/legislation/corpus-index";
 import { backfillLegislationSearchIndex } from "@/api/handlers/legislation/search-index";
 import { TimeoutError } from "@/api/lib/errors/tagged-errors";
 import { errorTag } from "@/api/lib/errors/utils";
+import { backfillSearchIndex } from "@/api/lib/legal-search/case-law-search-index";
+import { acquireCaseLawSourceIngestionLease } from "@/api/lib/legal-search/case-law-source-ingestion-lease";
 import { corpusGeneration } from "@/api/lib/legal-search/corpus-family";
 import { LIMITS } from "@/api/lib/limits";
 import { logger } from "@/api/lib/observability/logger";
@@ -56,6 +61,11 @@ import {
   cycleMadeProgress,
   cycleWasIdle,
 } from "./cycle-progress";
+import {
+  RECOMPUTE_OUTCOME,
+  type RecomputeOutcome,
+  nextRecomputeDelayMs,
+} from "./recompute-schedule";
 
 const formatLogDetail = (detail: unknown): string => {
   if (detail === undefined) {
@@ -177,7 +187,12 @@ const SEARCH_INDEX_INTERVAL_MS = 10_000;
 const SEARCH_INDEX_IDLE_MAX_MS = 15 * 60_000;
 const SEARCH_INDEX_BATCH_SIZE = 20;
 const SEARCH_INDEX_DRAIN_CONCURRENCY = 4;
-const CORPUS_INDEX_INTERVAL_MS = 15_000;
+// Throughput comes from the environment so a drain can be sped up or
+// reverted as a deployment change; the defaults preserve the historical
+// pace.
+const CORPUS_INDEX_INTERVAL_MS = envBase.CORPUS_INDEX_INTERVAL_MS;
+const CORPUS_INDEX_BATCH_SIZE = envBase.CORPUS_INDEX_BATCH_SIZE;
+const CORPUS_INDEX_READ_CONCURRENCY = envBase.CORPUS_INDEX_READ_CONCURRENCY;
 // Citation authority decays slowly; a periodic full recompute keeps the
 // materialized ranking signal fresh without per-cycle cost. The first
 // recompute runs shortly after startup rather than a full interval in: a
@@ -186,10 +201,11 @@ const CORPUS_INDEX_INTERVAL_MS = 15_000;
 // quickly after boot from adding a whole-corpus recompute to every start.
 const CITATION_AUTHORITY_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const CITATION_AUTHORITY_STARTUP_DELAY_MS = 5 * 60 * 1000;
-// After a skipped (lock held elsewhere) or failed recompute, retry on a
-// short delay instead of waiting a full interval: the holder may have
-// exited before committing, and its replacement should not inherit a
-// six-hour gap.
+// After a skipped recompute (lock held elsewhere), retry on a short delay
+// instead of waiting a full interval: the holder may have exited before
+// committing, and its replacement should not inherit a six-hour gap. A
+// failed recompute starts here too but backs off from it; see
+// `nextRecomputeDelayMs`.
 const CITATION_AUTHORITY_RETRY_DELAY_MS = 10 * 60 * 1000;
 
 // Idle backoff: once an adapter is caught up (no new decisions
@@ -612,7 +628,20 @@ const runOneCycle = async (
   const initialCursor =
     adapterKey === ADAPTER_KEYS.CZ_REGIONAL ? daysAgoCursor(7) : null;
 
-  const source = await ensureSource(adapterKey, name, initialCursor);
+  const configuredSource = await ensureSource(adapterKey, name, initialCursor);
+  const sourceLease = await acquireCaseLawSourceIngestionLease({
+    scopedDb: ingestionDb,
+    sourceId: configuredSource.id,
+  });
+  if (!sourceLease) {
+    logInfo(`[${adapterKey}] Source is leased by another ingestion worker`);
+    return {
+      outcome: CYCLE_OUTCOME.FAILED,
+      inserted: 0,
+      pagesProcessed: 0,
+    };
+  }
+  const { source } = sourceLease;
   const cursorBefore = source.syncCursor;
 
   logInfo(`[${adapterKey}] Ingesting (cursor: ${cursorBefore ?? "start"})`);
@@ -630,6 +659,7 @@ const runOneCycle = async (
 
     result = await runIngestionPipeline({
       source,
+      sourceLease,
       scopedDb: ingestionDb,
       dbSlot: dbWriteSemaphore,
       signal: AbortSignal.timeout(cycleMs),
@@ -659,6 +689,12 @@ const runOneCycle = async (
         0,
         2048,
       );
+  } finally {
+    try {
+      await sourceLease.release();
+    } catch (error) {
+      logError(`[${adapterKey}] Failed to release source lease:`, error);
+    }
   }
 
   const durationMs = Math.round(performance.now() - t0);
@@ -1022,30 +1058,65 @@ export const runCaseLawIngest = async (
   // deployment) skip instead of queueing duplicate whole-corpus updates.
   const citationAuthorityLoop = (async () => {
     await Bun.sleep(CITATION_AUTHORITY_STARTUP_DELAY_MS);
+    let consecutiveFailures = 0;
+    // Deployments restart the daemon well inside the recompute interval; a
+    // recompute committed by the previous process must count, so the first
+    // real attempt is gated on a one-time freshness probe.
+    let startupFreshnessPending = true;
     while (true) {
       if (isDraining()) {
         return;
       }
-      let recomputed = false;
+      let outcome: RecomputeOutcome = RECOMPUTE_OUTCOME.FAILED;
+      let freshRemainingMs = 0;
       try {
-        // oxlint-disable-next-line no-await-in-loop -- one full recompute per interval; the next poll only runs after this recompute completes
-        const courtWeightEntries = await loadCourtWeightEntries();
-        // oxlint-disable-next-line no-await-in-loop -- one full recompute per interval; the next poll only runs after this recompute completes
-        const updated = await ingestionDb(async (tx) => {
-          const count = await tryRecomputeCitationAuthorityForAll(tx, {
-            courtWeightEntries,
+        // oxlint-disable-next-line no-await-in-loop -- O(1) partial-index probe once per scheduled attempt
+        const rankable = await ingestionDb(hasResolvedCitations);
+        if (!rankable) {
+          // A recompute would scan every citation to update nothing.
+          outcome = RECOMPUTE_OUTCOME.IDLE;
+          logInfo(
+            "[citation-authority] Idle (no resolved citations to rank yet)",
+          );
+        } else if (startupFreshnessPending) {
+          // oxlint-disable-next-line no-await-in-loop -- one-time probe per process start
+          const latest = await ingestionDb(latestCitationAuthorityRecomputeAt);
+          // Cleared only once the probe answered (a throw keeps it armed).
+          startupFreshnessPending = false;
+          const ageMs = latest
+            ? Date.now() - latest.getTime()
+            : Number.POSITIVE_INFINITY;
+          if (ageMs < CITATION_AUTHORITY_INTERVAL_MS) {
+            outcome = RECOMPUTE_OUTCOME.FRESH;
+            freshRemainingMs = CITATION_AUTHORITY_INTERVAL_MS - ageMs;
+            logInfo(
+              `[citation-authority] Fresh (last recompute ${Math.round(ageMs / 60_000)}m ago); waiting out the interval`,
+            );
+          }
+        }
+        // Still at its FAILED initialization = no gate fired; attempt the
+        // recompute (which then reports skipped/recomputed/failed itself).
+        if (outcome === RECOMPUTE_OUTCOME.FAILED) {
+          // oxlint-disable-next-line no-await-in-loop -- one full recompute per interval; the next poll only runs after this recompute completes
+          const courtWeightEntries = await loadCourtWeightEntries();
+          // oxlint-disable-next-line no-await-in-loop -- one full recompute per interval; the next poll only runs after this recompute completes
+          const updated = await ingestionDb(async (tx) => {
+            const count = await tryRecomputeCitationAuthorityForAll(tx, {
+              courtWeightEntries,
+            });
+            return count;
           });
-          return count;
-        });
-        if (updated === null) {
-          logInfo(
-            "[citation-authority] Skipped (recompute already running in another process)",
-          );
-        } else {
-          recomputed = true;
-          logInfo(
-            `[citation-authority] Recomputed (${updated} cited decisions)`,
-          );
+          if (updated === null) {
+            outcome = RECOMPUTE_OUTCOME.SKIPPED;
+            logInfo(
+              "[citation-authority] Skipped (recompute already running in another process)",
+            );
+          } else {
+            outcome = RECOMPUTE_OUTCOME.RECOMPUTED;
+            logInfo(
+              `[citation-authority] Recomputed (${updated} cited decisions)`,
+            );
+          }
         }
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
@@ -1057,11 +1128,23 @@ export const runCaseLawIngest = async (
           logError("[citation-authority] Recompute error:", error);
         }
       }
-      // oxlint-disable-next-line no-await-in-loop -- fixed-interval recompute poll; the loop must wait between recomputes, so this await is intentionally sequential
+      if (outcome === RECOMPUTE_OUTCOME.SKIPPED) {
+        // The lock holder's commit is exactly what the retry must observe:
+        // a skip re-arms the freshness probe so the contender waits out the
+        // interval instead of repeating the freshly committed recompute.
+        startupFreshnessPending = true;
+      }
+      consecutiveFailures =
+        outcome === RECOMPUTE_OUTCOME.FAILED ? consecutiveFailures + 1 : 0;
+      // oxlint-disable-next-line no-await-in-loop -- scheduled recompute poll; the loop must wait between recomputes, so this await is intentionally sequential
       await Bun.sleep(
-        recomputed
-          ? CITATION_AUTHORITY_INTERVAL_MS
-          : CITATION_AUTHORITY_RETRY_DELAY_MS,
+        nextRecomputeDelayMs({
+          outcome,
+          consecutiveFailures,
+          freshRemainingMs,
+          retryDelayMs: CITATION_AUTHORITY_RETRY_DELAY_MS,
+          intervalMs: CITATION_AUTHORITY_INTERVAL_MS,
+        }),
       );
     }
   })();
@@ -1086,18 +1169,19 @@ export const runCaseLawIngest = async (
       }
       try {
         // oxlint-disable-next-line no-await-in-loop -- one bounded backfill batch per interval; the next poll only runs after this batch completes
-        const indexed = await runWithHardDeadline(
+        const result = await runWithHardDeadline(
           "corpus-index",
           BACKFILL_HARD_DEADLINE_MS,
           async () =>
             await backfillCorpusIndex(
               backfillDb,
-              LIMITS.corpusIndexBatchSize,
+              CORPUS_INDEX_BATCH_SIZE,
               generation,
+              { readConcurrency: CORPUS_INDEX_READ_CONCURRENCY },
             ),
         );
-        if (indexed > 0) {
-          logInfo(`[corpus-index] Indexed ${indexed} decisions`);
+        if (result.indexed > 0) {
+          logInfo(`[corpus-index] Indexed ${result.indexed} decisions`);
         }
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);

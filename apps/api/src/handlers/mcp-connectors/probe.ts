@@ -1,7 +1,7 @@
 import { Result, TaggedError } from "better-result";
 
-import { discoverOAuthMetadata } from "@/api/handlers/mcp-connectors/oauth";
 import { arrayOrEmpty } from "@/api/lib/array";
+import { discoverOAuthMetadata } from "@/api/lib/mcp-upstream/oauth";
 import {
   safeOutboundFetchBytes,
   validateOutboundFetchTarget,
@@ -14,7 +14,7 @@ const PROBE_MAX_BYTES = 1_000_000;
 class McpProbeError extends TaggedError("McpProbeError")<{
   message: string;
   cause?: unknown;
-}>() {}
+}> {}
 
 export type McpProbeResult =
   | {

@@ -46,18 +46,32 @@ import {
 import { stellaToast } from "@stll/ui/components/toast";
 import { cn } from "@stll/ui/lib/utils";
 
+import { DocumentIcon } from "@/components/document-icon";
 import {
   renderDragPreview,
   renderMultiDragPreview,
 } from "@/components/drag-preview";
 import type { DragPreviewData } from "@/components/drag-preview";
 import { FileTreeNameCell } from "@/components/file-tree/file-tree";
+import { InlineEdit } from "@/components/inline-edit";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
+import type { FileTab } from "@/components/inspector/inspector-tabs-store";
 import Tooltip from "@/components/tooltip";
+import { resolveAncestorIds } from "@/components/workspaces/copy-to-matter-dialog.logic";
+import {
+  buildTree,
+  findNode,
+  getEntityName,
+  getFieldValue,
+  getFirstFile,
+  getInternalPropertyId,
+} from "@/components/workspaces/entity-utils";
+import type { InternalPropertyId } from "@/components/workspaces/entity-utils";
+import type { TableTreeNode } from "@/components/workspaces/table/types";
 import { useExternalSyncEffect, useMountEffect } from "@/hooks/use-effect";
 import { useLatestCallback } from "@/hooks/use-latest-callback";
 import { useLocale } from "@/i18n/formatting-context";
 import { detached } from "@/lib/detached";
-import { HOTKEYS } from "@/lib/hotkeys";
 import { toSafeId } from "@/lib/safe-id";
 import { readStoredJson, writeStoredJson } from "@/lib/stored-json";
 import { isFileDisplayable } from "@/lib/types";
@@ -67,47 +81,33 @@ import type {
   WorkspaceProperty,
   WorkspaceView,
 } from "@/lib/types";
+import { useEffectiveHotkey } from "@/lib/use-effective-shortcuts";
+import { ENTITY_DRAG_TYPE } from "@/lib/workspaces/drag-constants";
+import {
+  useMoveEntity,
+  useRenameEntity,
+} from "@/lib/workspaces/mutations/entities";
+import {
+  filesystemEntitiesOptions,
+  visibleEntityFieldIds,
+} from "@/lib/workspaces/queries/entities";
+import { propertiesOptions } from "@/lib/workspaces/queries/properties";
+import { useWorkspaceStore } from "@/lib/workspaces/store";
 import { ActiveEditBadge } from "@/routes/_protected.workspaces/$workspaceId/-components/active-edit-badge";
 import { AddEntityMenu } from "@/routes/_protected.workspaces/$workspaceId/-components/add-entity-menu";
-import { resolveAncestorIds } from "@/routes/_protected.workspaces/$workspaceId/-components/copy-to-matter-dialog.logic";
-import { DocumentIcon } from "@/routes/_protected.workspaces/$workspaceId/-components/document-icon";
-import { ENTITY_DRAG_TYPE } from "@/routes/_protected.workspaces/$workspaceId/-components/drag-constants";
 import { EmptyState } from "@/routes/_protected.workspaces/$workspaceId/-components/empty-state";
 import { getFolderClickIntent } from "@/routes/_protected.workspaces/$workspaceId/-components/filesystem/tree-view-selection.logic";
 import { flattenFilesystemRows } from "@/routes/_protected.workspaces/$workspaceId/-components/filesystem/tree-virtualization";
-import { InlineEdit } from "@/routes/_protected.workspaces/$workspaceId/-components/inline-edit";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
-import type { FileTab } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
 import {
   AuthorCell,
   LastUpdatedCell,
   VersionCell,
 } from "@/routes/_protected.workspaces/$workspaceId/-components/metadata-cells";
 import { RowActions } from "@/routes/_protected.workspaces/$workspaceId/-components/row-actions";
-import type { TableTreeNode } from "@/routes/_protected.workspaces/$workspaceId/-components/table/types";
 import { VersionOrNewFileDialog } from "@/routes/_protected.workspaces/$workspaceId/-components/version-or-new-file-dialog";
 import { useInspectorFlash } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-inspector-flash";
 import { useVersionOrNewFileDrop } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-version-or-new-file-drop";
-import {
-  useMoveEntity,
-  useRenameEntity,
-} from "@/routes/_protected.workspaces/$workspaceId/-mutations/entities";
 import { useUpdateView } from "@/routes/_protected.workspaces/$workspaceId/-mutations/views";
-import {
-  filesystemEntitiesOptions,
-  visibleEntityFieldIds,
-} from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import { propertiesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
-import { useWorkspaceStore } from "@/routes/_protected.workspaces/$workspaceId/-store";
-import {
-  buildTree,
-  findNode,
-  getEntityName,
-  getFieldValue,
-  getFirstFile,
-  getInternalPropertyId,
-} from "@/routes/_protected.workspaces/$workspaceId/-utils";
-import type { InternalPropertyId } from "@/routes/_protected.workspaces/$workspaceId/-utils";
 
 const FILESYSTEM_ROW_HEIGHT_PX = 36;
 const FILESYSTEM_ROW_OVERSCAN = 16;
@@ -470,7 +470,7 @@ export const FilesystemView = ({ workspaceId, view }: FilesystemViewProps) => {
   }, [visibleNodes]);
 
   useHotkey(
-    HOTKEYS.SELECT_ALL,
+    useEffectiveHotkey("selectAll"),
     () => {
       setSelectedIds(allVisibleIds);
     },
@@ -1549,7 +1549,7 @@ const FilesystemRow = ({
         return undefined;
       }
       return () => {
-        const store = useInspectorStore.getState();
+        const store = useInspectorTabsStore.getState();
         for (const tab of navigables) {
           store.openFile(tab);
         }
@@ -1557,13 +1557,13 @@ const FilesystemRow = ({
     }
     if (node.kind === "task") {
       return () =>
-        useInspectorStore
+        useInspectorTabsStore
           .getState()
           .openTask({ taskId: node.entityId, workspaceId, label: name });
     }
     if (navigable) {
       return () =>
-        useInspectorStore.getState().openFile({
+        useInspectorTabsStore.getState().openFile({
           id: file.fieldId,
           entityId: file.entityId,
           label: name,

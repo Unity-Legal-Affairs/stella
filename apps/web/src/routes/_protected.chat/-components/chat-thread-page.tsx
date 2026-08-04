@@ -32,6 +32,7 @@ import { getUserMessageHtmlHistory } from "@/components/chat/chat-ui-tools";
 import { ComposerVeil } from "@/components/chat/composer-veil";
 import { PromptSuggestions } from "@/components/chat/prompt-suggestions";
 import { useChatModelSelection } from "@/components/chat/use-chat-model-selection";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import { useAIKeyGate } from "@/components/require-ai-key";
 import Tooltip from "@/components/tooltip";
 import { UsageLimitModal } from "@/components/usage/usage-limit-modal";
@@ -41,6 +42,10 @@ import { useChatSession } from "@/features/chat/hooks/use-chat-session";
 import { useChatThreadRuntime } from "@/features/chat/hooks/use-chat-thread-runtime";
 import { useChatUserContext } from "@/features/chat/hooks/use-chat-user-context";
 import { buildChatRequestMessage } from "@/features/chat/lib/build-chat-request-message";
+import {
+  resolveSuggestedPromptsAvailability,
+  resolveSuggestedPromptsTurnOwner,
+} from "@/features/chat/lib/suggested-prompts-availability";
 import {
   applyChatModelChange,
   chatThreadOptions,
@@ -53,6 +58,7 @@ import { useAnalytics } from "@/lib/analytics/provider";
 import { ChatAnonymizationLayer } from "@/lib/anonymize/use-chat-anonymization-layer";
 import { api } from "@/lib/api";
 import { optionalArray } from "@/lib/arrays";
+import { roleOptions } from "@/lib/auth-queries";
 import {
   getChatSendMode,
   useChatAnonymized,
@@ -68,16 +74,15 @@ import { ChromeHeaderActions } from "@/lib/chrome-header-actions";
 import { detached } from "@/lib/detached";
 import { unwrapEden } from "@/lib/errors/api";
 import { useModelSelectorStore } from "@/lib/model-selector-store";
+import { managementRoles } from "@/lib/organization/consts";
 import type { ChatPrompt } from "@/lib/prompts/types";
 import { useSavedPrompts } from "@/lib/prompts/use-saved-prompts";
 import { matchReservedChatCommand } from "@/lib/reserved-chat-commands";
 import { toSafeId } from "@/lib/safe-id";
-import { roleOptions } from "@/routes/-queries";
+import { usageEntitlementOptions } from "@/lib/usage-queries";
 import { ChatThreadRecap } from "@/routes/_protected.chat/-components/chat-thread-recap";
+import { ChatTurnNavigator } from "@/routes/_protected.chat/-components/chat-turn-navigator";
 import { ThreadsSheet } from "@/routes/_protected.chat/-components/threads-sheet";
-import { managementRoles } from "@/routes/_protected.organization/-consts";
-import { usageEntitlementOptions } from "@/routes/_protected.settings/-queries/usage";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
 
 type ChatThreadPageProps = {
   threadRef: ChatThreadRef;
@@ -132,6 +137,7 @@ export const ChatThreadPage = ({
   );
   const threadKey = getChatThreadKey(threadRef);
   const anonymized = useChatAnonymized(threadRef);
+  const [composerFocused, setComposerFocused] = useState(false);
   const getContextMatterIds = useLatestCallback(() =>
     resolveChatContextMatterIds(
       threadRef,
@@ -204,6 +210,7 @@ export const ChatThreadPage = ({
     removeQueuedMessage,
     stop,
     isGenerating,
+    turnAbandoned,
     alwaysApprovedTools,
     conversationApprovedTools,
     handleApprove,
@@ -213,6 +220,7 @@ export const ChatThreadPage = ({
     handleAskUserEditAndRerun,
     handleAlwaysAllow,
     handleCreateDocumentResolve,
+    handleOpenCreateDocumentDraft,
     handleOpenCreatedDocument,
     createDocumentMatters,
     isLoadingCreateDocumentMatters,
@@ -221,6 +229,7 @@ export const ChatThreadPage = ({
   } = useChatSession({
     chat,
     conversationId: threadRef.threadId,
+    getContextMatterIds,
     getSendMode,
     initialOlderCursor: data.olderCursor,
     onError: (nextError) => {
@@ -236,8 +245,6 @@ export const ChatThreadPage = ({
   // Gated by draft store emptiness so the query does not fire when the
   // user is already typing a custom follow-up.
   const lastMessage = messages.at(-1);
-  const lastMessageId = lastMessage?.id ?? null;
-  const lastMessageRole = lastMessage?.role ?? null;
   // Ask-user cards report their local "edit answers" mode here: reopening an
   // answered card turns it back into a live clarification form, which the
   // persisted part state (`output-available`) does not reflect.
@@ -261,41 +268,35 @@ export const ChatThreadPage = ({
     },
     [],
   );
-  // An ask-user clarification card owns the turn, and its own questions and
-  // submit button take precedence over generic follow-up suggestions, so
-  // suppress both the chips and the Tab-to-ask editor hint while one is live.
-  // A card is live when it is still awaiting input (always the last message),
-  // or when any card has been reopened via Edit — including an earlier card
-  // with downstream replies, where the persisted `output-available` state no
-  // longer reflects the live edit-and-rerun form.
-  const lastMessageHasPendingAskUser =
-    lastMessage !== undefined &&
-    lastMessage.role === "assistant" &&
-    lastMessage.parts.some(
-      (part) =>
-        part.type === "tool-call" &&
-        part.name === "ask-user" &&
-        part.state !== "complete",
-    );
-  const askUserOwnsTurn =
-    lastMessageHasPendingAskUser || editingAskUserToolCallIds.size > 0;
   const editorIsEmpty = useIsChatDraftEmpty(threadRef);
-  const eligibleForSuggestions =
-    editorIsEmpty &&
-    lastMessageId !== null &&
-    lastMessageRole === "assistant" &&
-    !askUserOwnsTurn;
+  const suggestedPromptsAvailability = resolveSuggestedPromptsAvailability({
+    editorIsEmpty,
+    error,
+    isGenerating,
+    lastMessage: lastMessage ?? null,
+    turnAbandoned,
+    turnOwner: resolveSuggestedPromptsTurnOwner({
+      approvalPendingMessageId,
+      hasReopenedAskUser: editingAskUserToolCallIds.size > 0,
+      lastMessage: lastMessage ?? null,
+    }),
+  });
+  const lastMessageId =
+    suggestedPromptsAvailability.status === "eligible"
+      ? suggestedPromptsAvailability.lastMessageId
+      : "";
   const { data: suggestedPromptsData } = useQuery(
     chatThreadSuggestedPromptsOptions({
       activeOrganizationId,
-      enabled: !isGenerating && eligibleForSuggestions,
-      lastMessageId: lastMessageId ?? "",
+      enabled: suggestedPromptsAvailability.status === "eligible",
+      lastMessageId,
       threadRef,
     }),
   );
-  const suggestedFollowupPrompts = suggestedPromptsData
-    ? suggestedPromptsData.prompts
-    : [];
+  const suggestedFollowupPrompts =
+    suggestedPromptsAvailability.status === "eligible" && suggestedPromptsData
+      ? suggestedPromptsData.prompts
+      : [];
   const suggestedFollowupPrompt = suggestedFollowupPrompts.at(0) ?? undefined;
 
   // Seed brand-new (empty) threads from the persisted web-search
@@ -349,7 +350,7 @@ export const ChatThreadPage = ({
     threadRef,
   });
 
-  const openInspectorChat = useInspectorStore((s) => s.openChat);
+  const openInspectorChat = useInspectorTabsStore((s) => s.openChat);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
@@ -436,9 +437,9 @@ export const ChatThreadPage = ({
   // The floating composer block grows with the draft (multi-line text,
   // attachment chips, followup chips), so a static bottom offset cannot
   // keep the scroll-to-bottom button clear of it in every state. Publish
-  // the block's live height as a CSS variable on the page container; the
-  // button (inside <Conversation>) inherits it and floats just above the
-  // block at any composer height.
+  // the block's live height as a CSS variable on the page container. The
+  // transcript bottom padding and scroll button (inside <Conversation>) both
+  // inherit it, keeping the final content above the block at any height.
   const pageContainerRef = useRef<HTMLDivElement>(null);
   const composerBlockRef = useRef<HTMLDivElement>(null);
   useExternalSyncEffect(() => {
@@ -565,8 +566,8 @@ export const ChatThreadPage = ({
             className="relative flex min-h-0 flex-1 flex-col"
             ref={pageContainerRef}
           >
-            <Conversation className="isolate min-h-0">
-              <ConversationContent className="mx-auto w-full max-w-5xl gap-3 px-4 pb-36">
+            <Conversation className="@container isolate min-h-0">
+              <ConversationContent className="mx-auto w-full max-w-5xl gap-3 px-4 pb-[calc(var(--composer-block-h,7rem)+1.5rem)]">
                 {messages.length === 0 && !isGenerating && !error ? (
                   <div className="m-auto w-full max-w-md px-4">
                     <PromptSuggestions
@@ -589,6 +590,7 @@ export const ChatThreadPage = ({
                       onAskUserEditingChange={handleAskUserEditingChange}
                       onAskUserSubmit={handleAskUserSubmit}
                       onCreateDocumentResolve={handleCreateDocumentResolve}
+                      onOpenCreateDocumentDraft={handleOpenCreateDocumentDraft}
                       onOpenCreatedDocument={handleOpenCreatedDocument}
                       onRemoveQueuedMessage={removeQueuedMessage}
                       onResend={resendLatestMessage}
@@ -597,6 +599,7 @@ export const ChatThreadPage = ({
                       showThinkingIndicator
                       stickyUserMessages
                       streamdownComponents={streamdownComponents}
+                      threadRef={threadRef}
                       workspaceId={workspaceId}
                     />
                     <ChatThreadRecap
@@ -612,12 +615,15 @@ export const ChatThreadPage = ({
                   </>
                 )}
               </ConversationContent>
+              <ChatTurnNavigator messages={messages} />
               <ConversationScrollButton className="bottom-[calc(var(--composer-block-h,7rem)+0.75rem)]" />
             </Conversation>
 
             <ChatAnonymizationLayer
               editor={controller.editor}
               enabled={anonymized}
+              focused={composerFocused}
+              ownerKey={threadKey}
               workspaceId={workspaceId ?? threadRef.threadId}
             />
             {/* Soft fade so messages dissolve into the floating composer
@@ -641,8 +647,8 @@ export const ChatThreadPage = ({
                 showing through beneath the status row. The tray wrapper's
                 `p-2` keeps the composer breathing inside the veil.
                 `--composer-block-h` is measured from this block's live
-                height, so the scroll button's offset tracks the change
-                automatically. */}
+                height, so transcript clearance and the scroll button's
+                offset track the change automatically. */}
             <div
               className="absolute inset-x-0 bottom-0 z-20 mx-auto w-full max-w-5xl px-4"
               ref={composerBlockRef}
@@ -693,6 +699,12 @@ export const ChatThreadPage = ({
                   dock={
                     <ChatComposerDock
                       data={data}
+                      models={{
+                        activeOrganizationId,
+                        threadRef,
+                        selectedModel: data.model,
+                        selectModel: modelSelection.selectModel,
+                      }}
                       leadingContext={
                         <ChatMatterPicker
                           matterIds={selectedContextMatterIds}
@@ -710,6 +722,7 @@ export const ChatThreadPage = ({
                   onStop={() => {
                     stop();
                   }}
+                  onFocusChange={setComposerFocused}
                   onSubmit={handleSubmit}
                 />
               </div>

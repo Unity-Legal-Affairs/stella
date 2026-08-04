@@ -20,15 +20,9 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { SafeDb, ScopedDb } from "@/api/db/safe-db";
 import { reportExports } from "@/api/db/schema";
 import type { ReportTemplateRef } from "@/api/db/schema";
-import { createEntityFromBuffer } from "@/api/handlers/entities/create-from-buffer";
-import { convertToPdf } from "@/api/handlers/files/gotenberg";
 import { buildReportData } from "@/api/handlers/reports/build-report-data";
 import { getBuiltinReportTemplate } from "@/api/handlers/reports/builtin-templates";
 import { notifyReportExportStatus } from "@/api/handlers/reports/report-export-notification";
-import {
-  fillStoredTemplateDocx,
-  fillTemplateDocx,
-} from "@/api/handlers/templates/template-fill-service";
 import type { OrgAIConfig } from "@/api/lib/ai-config";
 import { loadOrgAIConfig } from "@/api/lib/ai-config-loader";
 import { captureError } from "@/api/lib/analytics/capture";
@@ -42,7 +36,9 @@ import {
   buildAiFieldGenerator,
   buildAiOccurrenceAdapter,
 } from "@/api/lib/docx/ai-field-generator";
+import { createEntityFromBuffer } from "@/api/lib/entities/create-from-buffer";
 import { connectionErrorFields, errorTag } from "@/api/lib/errors/utils";
+import { convertToPdf } from "@/api/lib/files/gotenberg";
 import { logger } from "@/api/lib/observability/logger";
 import { createBullMqConnection } from "@/api/lib/redis-client";
 import { listPendingReportExportNotifications } from "@/api/lib/report-export-notification-recovery";
@@ -56,6 +52,10 @@ import {
 } from "@/api/lib/safe-id-boundaries";
 import { sanitizeFilename } from "@/api/lib/sanitize-filename";
 import { hasTanStackInstanceProvider } from "@/api/lib/tanstack-ai-models";
+import {
+  fillStoredTemplateDocx,
+  fillTemplateDocx,
+} from "@/api/lib/templates/template-fill-service";
 import { parseViewLayout } from "@/api/lib/views-schema";
 import { DOCX_MIME_TYPE, PDF_MIME_TYPE } from "@/api/mime-types";
 
@@ -490,6 +490,18 @@ const runExport = async ({
       workspaceId: actor.workspaceId,
       userId: actor.userId,
       recordAuditEvent: createBackgroundAuditRecorder({
+        execution: {
+          performer: {
+            id: "report-export",
+            name: "Report export",
+            type: "service",
+          },
+          trigger: {
+            source: "action",
+            type: "user_dispatch",
+            userId: actor.userId,
+          },
+        },
         organizationId: actor.organizationId,
         workspaceId: actor.workspaceId,
         userId: actor.userId,
@@ -503,7 +515,9 @@ const runExport = async ({
       return;
     }
     await completeExport(actor, {
-      resultEntityId: created.value.entityId,
+      type: "workspace",
+      entityId: created.value.entityId,
+      fieldId: created.value.fieldId,
     });
     return;
   }
@@ -515,7 +529,7 @@ const runExport = async ({
   // to name the download, so no format column is needed on the export row.
   const key = `exports/${actor.organizationId}/${actor.workspaceId}/${actor.exportId}.${delivery.ext}`;
   await getS3().write(key, delivery.buffer);
-  await completeExport(actor, { resultS3Key: key });
+  await completeExport(actor, { type: "download", s3Key: key });
 };
 
 type FillReportResult =
@@ -681,9 +695,36 @@ const setExportStatus = async (
   });
 };
 
+type CompletedExportResult =
+  | {
+      type: "workspace";
+      entityId: SafeId<"entity">;
+      fieldId: SafeId<"field">;
+    }
+  | { type: "download"; s3Key: string };
+
+const completedExportValues = (result: CompletedExportResult) => {
+  switch (result.type) {
+    case "workspace":
+      return {
+        resultEntityId: result.entityId,
+        resultFieldId: result.fieldId,
+        resultS3Key: null,
+      };
+    case "download":
+      return {
+        resultEntityId: null,
+        resultFieldId: null,
+        resultS3Key: result.s3Key,
+      };
+    default:
+      return result satisfies never;
+  }
+};
+
 const completeExport = async (
   actor: ExportActor,
-  result: { resultEntityId?: SafeId<"entity">; resultS3Key?: string },
+  result: CompletedExportResult,
 ): Promise<void> => {
   await actor.scopedDb(async (tx) => {
     // audit: skip — terminal bookkeeping on the already-audited export row (the
@@ -693,8 +734,7 @@ const completeExport = async (
       .set({
         status: "completed",
         error: null,
-        resultEntityId: result.resultEntityId ?? null,
-        resultS3Key: result.resultS3Key ?? null,
+        ...completedExportValues(result),
       })
       .where(
         and(

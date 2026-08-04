@@ -50,13 +50,18 @@ import { stellaToast } from "@stll/ui/components/toast";
 import { cn } from "@stll/ui/lib/utils";
 
 import { FacetBar } from "@/components/inspector/inspector-facet-bar";
-import { useInspectorStore } from "@/components/inspector/inspector-store";
 import { InspectorTabHeader } from "@/components/inspector/inspector-tab-header";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import type {
   InspectorRailIconProps,
   InspectorViewRenderProps,
 } from "@/components/inspector/view-registry";
 import { registerInspectorView } from "@/components/inspector/view-registry";
+import {
+  ARRAY_INDEX_KEY_PREFIX,
+  TemplateForm,
+  useFillToMatterSaveTarget,
+} from "@/components/templates/template-form";
 import Tooltip from "@/components/tooltip";
 import { useMountEffect } from "@/hooks/use-effect";
 import { usePermissions } from "@/hooks/use-permissions";
@@ -68,17 +73,20 @@ import { BoundedMap } from "@/lib/bounded-set";
 import { SIDE_RAIL_TAB_ICON_SIZE_PX, TOOLBAR_ROW_HEIGHT } from "@/lib/consts";
 import { detached } from "@/lib/detached";
 import { userErrorMessage } from "@/lib/errors/user-safe";
+import {
+  knowledgeKeys,
+  templateCheckOptions,
+  templateClausePreviewOptions,
+  templateClausesOptions,
+  templateDetailOptions,
+  templateFillDiscoverOptions,
+  templateRecipesOptions,
+} from "@/lib/knowledge/queries";
 import { toSafeId } from "@/lib/safe-id";
 import { LinkClauseDialog } from "@/routes/_protected.knowledge/-components/link-clause-dialog";
 import { parseArrayItemKey } from "@/routes/_protected.knowledge/-components/template-array-item-key";
 import { TemplateCheckDialog } from "@/routes/_protected.knowledge/-components/template-check-dialog";
 import type { LinkedClause } from "@/routes/_protected.knowledge/-components/template-clauses-tab";
-import {
-  ARRAY_INDEX_KEY_PREFIX,
-  TemplateForm,
-  useFillToMatterSaveTarget,
-} from "@/routes/_protected.knowledge/-components/template-form";
-import { useTemplateNavStore } from "@/routes/_protected.knowledge/-components/template-nav-store";
 import {
   ConditionFace,
   LoopFace,
@@ -102,15 +110,7 @@ import {
   type StudioField,
 } from "@/routes/_protected.knowledge/-components/template-studio-store";
 import { TemplateVersionsTab } from "@/routes/_protected.knowledge/-components/template-versions-tab";
-import {
-  knowledgeKeys,
-  templateCheckOptions,
-  templateClausePreviewOptions,
-  templateClausesOptions,
-  templateDetailOptions,
-  templateFillDiscoverOptions,
-  templateRecipesOptions,
-} from "@/routes/_protected.knowledge/-queries";
+import { useTemplateNavStore } from "@/stores/knowledge/template-nav-store";
 
 type StudioFacet = "fields" | "guidance" | "history" | "fill";
 type TemplateStudioPayload = { templateId: string };
@@ -162,7 +162,7 @@ export function TemplateStudioInspectorView({
       ? detailData
       : null;
   const languages = detail ? detail.languages : [];
-  const openView = useInspectorStore((s) => s.openView);
+  const openView = useInspectorTabsStore((s) => s.openView);
   const setNavName = useTemplateNavStore((s) => s.setName);
   const [rename, setRename] = useState<{ active: boolean; value: string }>({
     active: false,
@@ -1180,7 +1180,7 @@ export const Inspector = ({
   onFieldUpdate,
   onFieldBack,
 }: InspectorProps) => {
-  if (selected && selected.kind === "placeholder") {
+  if (selected?.kind === "placeholder") {
     const field =
       fields.find((f) => f.path === selected.expr) ??
       defaultStudioField(selected.expr);
@@ -1198,11 +1198,11 @@ export const Inspector = ({
     return <ConditionFace fields={fields} selected={selected} />;
   }
 
-  if (selected && selected.kind === "clause") {
+  if (selected?.kind === "clause") {
     return <ClauseFace selected={selected} />;
   }
 
-  if (selected && selected.kind === "each") {
+  if (selected?.kind === "each") {
     return <LoopFace key={selected.expr} selected={selected} />;
   }
 

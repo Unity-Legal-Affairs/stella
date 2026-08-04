@@ -1,9 +1,11 @@
 import { chat, EventType, maxIterations, toolDefinition } from "@tanstack/ai";
-import type { Tool } from "@tanstack/ai";
+import type { ModelMessage, Tool } from "@tanstack/ai";
+import { panic, Result } from "better-result";
 import { isDeepStrictEqual } from "node:util";
 import * as v from "valibot";
 
 import {
+  CHAT_PDF_ATTACHMENT_MODEL_OPTIONS,
   DEFAULT_MODELS,
   isBYOKModelRoleSupported,
   isBYOKProviderRoleSupported,
@@ -22,6 +24,7 @@ import {
   resolveTanStackTextModel,
 } from "@/api/lib/tanstack-ai-generate";
 import { projectSchemaInputJsonSchema } from "@/api/lib/tanstack-ai-schema";
+import { PDF_MIME_TYPE } from "@/api/mime-types";
 
 import {
   CANARY_TIERS,
@@ -35,10 +38,7 @@ import type {
   CanaryProvider,
   WeeklyCanaryRotation,
 } from "./ai-provider-canary-config";
-import {
-  createWeeklyToolShapeDefinition,
-  WEEKLY_TOOL_RESULT,
-} from "./ai-provider-canary-weekly";
+import { createWeeklyToolShapeDefinition } from "./ai-provider-canary-weekly";
 
 const CAPABILITY_ROLE = "fast" satisfies ModelRole;
 const TOOL_CALL_ROLE = "chat" satisfies ModelRole;
@@ -46,8 +46,15 @@ const MAX_OUTPUT_TOKENS = 64;
 const CAPABILITY_PROBE_TIMEOUT_MS = 20_000;
 const MODEL_ROLE_PROBE_TIMEOUT_MS = 30_000;
 const TOOL_ROUND_TRIP_PROBE_TIMEOUT_MS = 45_000;
+const CANARY_PROBE_MAX_ATTEMPTS = 2;
+const CANARY_PROBE_RETRY_DELAY_MS = 5000;
+const PROVIDER_ERROR_MESSAGE_MAX_LENGTH = 16_384;
 const MILLISECONDS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
 const SYNTHETIC_PROMPT = "Reply with exactly OK.";
+export const PDF_CANARY_TOKEN = "STELLA_PDF_CANARY_OK";
+const PDF_CANARY_FILENAME = "stella-provider-canary.pdf";
+const PDF_CANARY_PROMPT =
+  "Read the attached PDF and reply with exactly the uppercase identifier printed on its page.";
 const TOOL_SCHEMA_PROMPT = "Do not call any tool. Reply with exactly OK.";
 const TOOL_ROUND_TRIP_NAME = "canary_round_trip";
 const TOOL_ROUND_TRIP_VALUE = "stella-canary";
@@ -75,12 +82,56 @@ const SAFE_CANARY_ERROR_MESSAGES = new Set([
   "Provider adapter preserved a synthetic null tool argument.",
   "Provider generated an unexpected optional tool argument.",
   "Provider returned unexpected canary tool arguments.",
-  "Provider did not return the canary tool result.",
   "Provider did not execute the weekly canary tool exactly once.",
   "Provider returned unexpected weekly canary tool arguments.",
-  "Provider did not return the weekly canary tool result.",
+  "Provider did not read the attached PDF.",
   "Provider returned no text.",
 ]);
+
+const createSyntheticPdf = (): Uint8Array => {
+  const stream = `BT /F1 18 Tf 72 720 Td (${PDF_CANARY_TOKEN}) Tj ET`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(pdf);
+  const entries = offsets
+    .map((offset) => `${offset.toString().padStart(10, "0")} 00000 n \n`)
+    .join("");
+  pdf +=
+    `xref\n0 ${objects.length + 1}\n` +
+    `0000000000 65535 f \n${entries}` +
+    `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\n` +
+    `startxref\n${xrefOffset}\n%%EOF\n`;
+  return new TextEncoder().encode(pdf);
+};
+
+export const createPdfCanaryMessages = (): ModelMessage[] => [
+  {
+    role: "user",
+    content: [
+      { type: "text", content: PDF_CANARY_PROMPT },
+      {
+        type: "document",
+        source: {
+          type: "data",
+          value: Buffer.from(createSyntheticPdf()).toString("base64"),
+          mimeType: PDF_MIME_TYPE,
+        },
+        metadata: { filename: PDF_CANARY_FILENAME },
+      },
+    ],
+  },
+];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -108,36 +159,149 @@ const SAFE_PROVIDER_CODES = new Set([
   "timeout_error",
 ]);
 
+const RETRYABLE_PROVIDER_CODES = new Set([
+  "aborted",
+  "api_error",
+  "error",
+  "incomplete",
+  "overloaded_error",
+  "provider_error",
+  "rate_limit_error",
+  "rate_limit_exceeded",
+  "server_error",
+  "timeout",
+  "timeout_error",
+]);
+
+const RETRYABLE_TRANSPORT_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
 type CanaryRunStage =
   | "before-tool-call"
   | "after-tool-call"
   | "after-tool-result";
 
-const providerCode = (error: unknown, depth = 0): string | null => {
+const PROVIDER_ERROR_NESTED_KEYS = ["rawEvent", "error", "cause"] as const;
+
+const providerErrorBodyFromMessage = (
+  error: Record<string, unknown>,
+): Record<string, unknown> | null => {
+  if (PROVIDER_ERROR_NESTED_KEYS.some((key) => error[key] !== undefined)) {
+    return null;
+  }
+
+  const message = error["message"];
+  if (typeof message !== "string") {
+    return null;
+  }
+  if (message.length > PROVIDER_ERROR_MESSAGE_MAX_LENGTH) {
+    return null;
+  }
+  const body = message.trimStart();
+  if (!body.startsWith("{")) {
+    return null;
+  }
+
+  const parsed = Result.try((): unknown => JSON.parse(body));
+  if (Result.isError(parsed) || !isRecord(parsed.value)) {
+    return null;
+  }
+  return parsed.value;
+};
+
+const explicitRetryability = (error: unknown, depth = 0): boolean | null => {
   if (!isRecord(error)) {
     return null;
   }
-  const code = error["code"];
-  if (typeof code === "string" && SAFE_PROVIDER_CODES.has(code)) {
-    return code;
+
+  for (const key of ["retryable", "isRetryable"] as const) {
+    const value = error[key];
+    if (typeof value === "boolean") {
+      return value;
+    }
+  }
+  const smithyRetryable = error["$retryable"];
+  if (typeof smithyRetryable === "boolean") {
+    return smithyRetryable;
+  }
+  if (isRecord(smithyRetryable)) {
+    return true;
   }
 
-  if (depth >= 3) {
-    return null;
-  }
-  for (const key of ["rawEvent", "error", "cause"] as const) {
-    const nestedCode = providerCode(error[key], depth + 1);
-    if (nestedCode !== null) {
-      return nestedCode;
+  if (depth < 3) {
+    for (const key of PROVIDER_ERROR_NESTED_KEYS) {
+      const nestedRetryability = explicitRetryability(error[key], depth + 1);
+      if (nestedRetryability !== null) {
+        return nestedRetryability;
+      }
+    }
+    const messageRetryability = explicitRetryability(
+      providerErrorBodyFromMessage(error),
+      depth + 1,
+    );
+    if (messageRetryability !== null) {
+      return messageRetryability;
     }
   }
   return null;
 };
 
+const rawProviderCode = (error: unknown, depth = 0): string | null => {
+  if (!isRecord(error)) {
+    return null;
+  }
+
+  if (depth < 3) {
+    for (const key of PROVIDER_ERROR_NESTED_KEYS) {
+      const nestedCode = rawProviderCode(error[key], depth + 1);
+      if (nestedCode !== null) {
+        return nestedCode;
+      }
+    }
+    const messageCode = rawProviderCode(
+      providerErrorBodyFromMessage(error),
+      depth + 1,
+    );
+    if (messageCode !== null) {
+      return messageCode;
+    }
+  }
+
+  const code = error["code"];
+  return typeof code === "string" ? code : null;
+};
+
+const safeProviderCode = (code: string | null): string | null =>
+  code !== null && SAFE_PROVIDER_CODES.has(code) ? code : null;
+
 const providerStatus = (error: unknown, depth = 0): number | null => {
   if (!isRecord(error)) {
     return null;
   }
+
+  if (depth < 3) {
+    for (const key of PROVIDER_ERROR_NESTED_KEYS) {
+      const nestedStatus = providerStatus(error[key], depth + 1);
+      if (nestedStatus !== null) {
+        return nestedStatus;
+      }
+    }
+    const messageStatus = providerStatus(
+      providerErrorBodyFromMessage(error),
+      depth + 1,
+    );
+    if (messageStatus !== null) {
+      return messageStatus;
+    }
+  }
+
   for (const key of ["status", "statusCode", "code"] as const) {
     const value = error[key];
     if (
@@ -149,14 +313,44 @@ const providerStatus = (error: unknown, depth = 0): number | null => {
       return value;
     }
   }
+  return null;
+};
 
-  if (depth >= 3) {
+const isRetryableProviderStatus = (status: number): boolean =>
+  status === 429 || status >= 500;
+
+const isRetryableProviderCode = (code: string | null): boolean =>
+  code !== null &&
+  (RETRYABLE_PROVIDER_CODES.has(code) || RETRYABLE_TRANSPORT_CODES.has(code));
+
+const isTerminalProviderCode = (code: string | null): boolean =>
+  code !== null &&
+  SAFE_PROVIDER_CODES.has(code) &&
+  !RETRYABLE_PROVIDER_CODES.has(code);
+
+const terminalProviderCode = (error: unknown, depth = 0): string | null => {
+  if (!isRecord(error)) {
     return null;
   }
-  for (const key of ["rawEvent", "error", "cause"] as const) {
-    const nestedStatus = providerStatus(error[key], depth + 1);
-    if (nestedStatus !== null) {
-      return nestedStatus;
+
+  const code = error["code"];
+  if (typeof code === "string" && isTerminalProviderCode(code)) {
+    return code;
+  }
+
+  if (depth < 3) {
+    for (const key of PROVIDER_ERROR_NESTED_KEYS) {
+      const nestedCode = terminalProviderCode(error[key], depth + 1);
+      if (nestedCode !== null) {
+        return nestedCode;
+      }
+    }
+    const messageCode = terminalProviderCode(
+      providerErrorBodyFromMessage(error),
+      depth + 1,
+    );
+    if (messageCode !== null) {
+      return messageCode;
     }
   }
   return null;
@@ -164,17 +358,102 @@ const providerStatus = (error: unknown, depth = 0): number | null => {
 
 export class CanaryProviderRunError extends TypeError {
   readonly code: string | null;
+  readonly retryCode: string | null;
+  readonly retryable: boolean | null;
   readonly stage: CanaryRunStage;
   readonly status: number | null;
+  readonly terminalCode: string | null;
 
   constructor(event: unknown, stage: CanaryRunStage) {
     super("Provider stream failed.");
     this.name = "CanaryProviderRunError";
-    this.code = providerCode(event);
+    this.retryCode = rawProviderCode(event);
+    this.retryable = explicitRetryability(event);
+    this.code = safeProviderCode(this.retryCode);
     this.stage = stage;
     this.status = providerStatus(event);
+    this.terminalCode = terminalProviderCode(event);
   }
 }
+
+export const isRetryableCanaryError = (
+  error: unknown,
+  signal: AbortSignal,
+): boolean => {
+  if (signal.aborted) {
+    return true;
+  }
+
+  if (error instanceof CanaryProviderRunError) {
+    if (error.terminalCode !== null) {
+      return false;
+    }
+    if (error.retryable !== null) {
+      return error.retryable;
+    }
+    if (error.status !== null) {
+      return isRetryableProviderStatus(error.status);
+    }
+    return error.retryCode === null || isRetryableProviderCode(error.retryCode);
+  }
+
+  const code = rawProviderCode(error);
+  if (terminalProviderCode(error) !== null) {
+    return false;
+  }
+  const retryable = explicitRetryability(error);
+  if (retryable !== null) {
+    return retryable;
+  }
+  const status = providerStatus(error);
+  if (status !== null) {
+    return isRetryableProviderStatus(status);
+  }
+  return isRetryableProviderCode(code);
+};
+
+type CanaryProbeResult =
+  | { attempts: number; status: "passed" }
+  | {
+      attempts: number;
+      error: unknown;
+      signal: AbortSignal;
+      status: "failed";
+    };
+
+type RunCanaryProbeOptions = {
+  retryDelayMs?: number;
+  run: (signal: AbortSignal) => Promise<void>;
+  timeoutMs: number;
+  wait?: (delayMs: number) => Promise<void>;
+};
+
+export const runCanaryProbe = async ({
+  retryDelayMs = CANARY_PROBE_RETRY_DELAY_MS,
+  run: runAttempt,
+  timeoutMs,
+  wait = Bun.sleep,
+}: RunCanaryProbeOptions): Promise<CanaryProbeResult> => {
+  for (let attempt = 1; attempt <= CANARY_PROBE_MAX_ATTEMPTS; attempt += 1) {
+    const signal = AbortSignal.timeout(timeoutMs);
+    try {
+      // oxlint-disable-next-line no-await-in-loop -- retries must wait for the preceding provider attempt to fail.
+      await runAttempt(signal);
+      return { attempts: attempt, status: "passed" };
+    } catch (error) {
+      if (
+        attempt === CANARY_PROBE_MAX_ATTEMPTS ||
+        !isRetryableCanaryError(error, signal)
+      ) {
+        return { attempts: attempt, error, signal, status: "failed" };
+      }
+      // oxlint-disable-next-line no-await-in-loop -- bounded backoff separates sequential provider attempts.
+      await wait(retryDelayMs);
+    }
+  }
+
+  return panic("Canary retry loop exhausted without a result.");
+};
 
 const NO_CACHING = {
   enabled: false,
@@ -188,6 +467,32 @@ const CANARY_CACHING = {
 } as const satisfies CachingDecision;
 
 const structuredOutputSchema = v.strictObject({ ok: v.literal(true) });
+
+// Exercises the nested shape and the value constraints (array bounds, string
+// lengths) that provider schema compilers treat differently from a trivial
+// object. The content is synthetic; this canary exists to catch provider drift
+// in the exact shared projection used by production structured-output calls.
+const nestedStructuredOutputSchema = v.strictObject({
+  entries: v.pipe(
+    v.array(
+      v.strictObject({
+        heading: v.pipe(v.string(), v.maxLength(120)),
+        status: v.picklist(["accepted", "needs-work", "not-applicable"]),
+        explanation: v.string(),
+        primaryEvidence: v.pipe(
+          v.array(v.strictObject({ source: v.string(), locator: v.string() })),
+          v.maxLength(8),
+        ),
+        secondaryEvidence: v.pipe(
+          v.array(v.strictObject({ source: v.string(), locator: v.string() })),
+          v.maxLength(8),
+        ),
+        suggestedRevision: v.nullable(v.string()),
+      }),
+    ),
+    v.maxLength(200),
+  ),
+});
 
 const strictTool = toolDefinition({
   name: "canary_closed_tool",
@@ -273,11 +578,32 @@ type ModelRoleProbe = ProbeBase & {
   role: ModelRole;
 };
 
-type Probe = CapabilityProbe | ModelRoleProbe;
+type StructuredOutputModelRoleProbe = ProbeBase & {
+  type: "structured-output-role";
+  role: ModelRole;
+};
+
+type Probe = CapabilityProbe | ModelRoleProbe | StructuredOutputModelRoleProbe;
 
 type CanaryContext = {
   config: OrgAIConfig;
   provider: CanaryProvider;
+};
+
+type PdfCanarySelection = {
+  modelId: string;
+  role: "chat" | "pdf";
+};
+
+export const pdfCanarySelection = (
+  provider: CanaryProvider,
+): PdfCanarySelection | null => {
+  if (isBYOKProviderRoleSupported({ provider, role: "pdf" })) {
+    return { modelId: DEFAULT_MODELS[provider].pdf, role: "pdf" };
+  }
+
+  const modelId = CHAT_PDF_ATTACHMENT_MODEL_OPTIONS[provider].at(0);
+  return modelId === undefined ? null : { modelId, role: "chat" };
 };
 
 type WeeklyCanaryContext = CanaryContext & {
@@ -295,6 +621,18 @@ const modelRoleProbes = MODEL_ROLES.map(
         await runModelRoleProbe({ context, role, signal });
       },
     }) satisfies ModelRoleProbe,
+);
+
+const structuredOutputModelRoleProbes = MODEL_ROLES.map(
+  (role) =>
+    ({
+      type: "structured-output-role",
+      role,
+      timeoutMs: MODEL_ROLE_PROBE_TIMEOUT_MS,
+      run: async (context, signal) => {
+        await runStructuredOutputModelRoleProbe({ context, role, signal });
+      },
+    }) satisfies StructuredOutputModelRoleProbe,
 );
 
 const capabilityProbes = [
@@ -321,7 +659,7 @@ const capabilityProbes = [
     name: "strict-tool-schema",
     timeoutMs: CAPABILITY_PROBE_TIMEOUT_MS,
     run: async (context, signal) => {
-      await runToolProbe({
+      const output = await runToolProbe({
         context,
         maxOutputTokens: MAX_OUTPUT_TOKENS,
         prompt: TOOL_SCHEMA_PROMPT,
@@ -329,6 +667,7 @@ const capabilityProbes = [
         signal,
         tool: strictTool,
       });
+      requireNonEmptyText(output);
     },
   },
   {
@@ -336,7 +675,7 @@ const capabilityProbes = [
     name: "open-map-tool-schema",
     timeoutMs: CAPABILITY_PROBE_TIMEOUT_MS,
     run: async (context, signal) => {
-      await runToolProbe({
+      const output = await runToolProbe({
         context,
         maxOutputTokens: MAX_OUTPUT_TOKENS,
         prompt: TOOL_SCHEMA_PROMPT,
@@ -344,6 +683,7 @@ const capabilityProbes = [
         signal,
         tool: openMapTool,
       });
+      requireNonEmptyText(output);
     },
   },
   {
@@ -377,6 +717,7 @@ const capabilityProbes = [
 
 const probes = [
   ...modelRoleProbes,
+  ...structuredOutputModelRoleProbes,
   ...capabilityProbes,
 ] satisfies readonly Probe[];
 
@@ -391,15 +732,32 @@ const runModelRoleProbe = async ({
   role,
   signal,
 }: RunModelRoleProbeOptions): Promise<void> => {
+  const selection =
+    role === "pdf"
+      ? pdfCanarySelection(provider)
+      : { modelId: DEFAULT_MODELS[provider][role], role };
+  if (selection === null) {
+    throw new TypeError("Canary resolved an unexpected provider model.");
+  }
+  const probeConfig =
+    selection.role === role
+      ? config
+      : {
+          ...config,
+          overrideModels: {
+            ...config.overrideModels,
+            [selection.role]: {
+              modelId: selection.modelId,
+              provider,
+            },
+          },
+        };
   const model = resolveTanStackTextModel({
     organizationId: null,
-    orgAIConfig: config,
-    role,
+    orgAIConfig: probeConfig,
+    role: selection.role,
   });
-  if (
-    model.provider !== provider ||
-    model.modelId !== DEFAULT_MODELS[provider][role]
-  ) {
+  if (model.provider !== provider || model.modelId !== selection.modelId) {
     throw new TypeError("Canary resolved an unexpected provider model.");
   }
 
@@ -407,13 +765,33 @@ const runModelRoleProbe = async ({
     abortSignal: signal,
     caching: NO_CACHING,
     maxOutputTokens: modelRoleMaxOutputTokens(role),
+    ...(role === "pdf"
+      ? { messages: createPdfCanaryMessages() }
+      : { prompt: SYNTHETIC_PROMPT }),
+    organizationId: null,
+    orgAIConfig: probeConfig,
+    role: selection.role,
+    serviceTier: "standard",
+  });
+  requireExpectedRoleOutput(output, role);
+};
+
+const runStructuredOutputModelRoleProbe = async ({
+  context: { config },
+  role,
+  signal,
+}: RunModelRoleProbeOptions): Promise<void> => {
+  await generateTanStackObjectForRole({
+    abortSignal: signal,
+    caching: NO_CACHING,
+    maxOutputTokens: modelRoleMaxOutputTokens(role),
     organizationId: null,
     orgAIConfig: config,
-    prompt: SYNTHETIC_PROMPT,
+    outputSchema: nestedStructuredOutputSchema,
+    prompt: "Return an object with an empty entries array.",
     role,
     serviceTier: "standard",
   });
-  requireNonEmptyText(output);
 };
 
 type RunWeeklyModelRoleProbeOptions = {
@@ -440,13 +818,33 @@ const runWeeklyModelRoleProbe = async ({
     abortSignal: signal,
     caching: NO_CACHING,
     maxOutputTokens: modelRoleMaxOutputTokens(role),
+    ...(role === "pdf"
+      ? { messages: createPdfCanaryMessages() }
+      : { prompt: SYNTHETIC_PROMPT }),
     organizationId: null,
     orgAIConfig: rotatedConfig,
-    prompt: SYNTHETIC_PROMPT,
     role,
     serviceTier: "standard",
   });
-  requireNonEmptyText(output);
+  requireExpectedRoleOutput(output, role);
+};
+
+const runWeeklyStructuredOutputModelRoleProbe = async ({
+  context: { rotatedConfig },
+  role,
+  signal,
+}: RunWeeklyModelRoleProbeOptions): Promise<void> => {
+  await generateTanStackObjectForRole({
+    abortSignal: signal,
+    caching: NO_CACHING,
+    maxOutputTokens: modelRoleMaxOutputTokens(role),
+    organizationId: null,
+    orgAIConfig: rotatedConfig,
+    outputSchema: nestedStructuredOutputSchema,
+    prompt: "Return an object with an empty entries array.",
+    role,
+    serviceTier: "standard",
+  });
 };
 
 type RunToolCallRoundTripProbeOptions = {
@@ -470,7 +868,7 @@ const runToolCallRoundTripProbe = async ({
     return { confirmation: TOOL_ROUND_TRIP_RESULT };
   });
 
-  const output = await runToolProbe({
+  await runToolProbe({
     context,
     maxOutputTokens: modelRoleMaxOutputTokens(TOOL_CALL_ROLE),
     prompt: toolRoundTripPromptForProvider(context.provider),
@@ -502,9 +900,6 @@ const runToolCallRoundTripProbe = async ({
       "Provider generated an unexpected optional tool argument.",
     );
   }
-  if (output.trim() !== TOOL_ROUND_TRIP_RESULT) {
-    throw new TypeError("Provider did not return the canary tool result.");
-  }
 };
 
 type RunWeeklyToolShapeProbeOptions = {
@@ -512,25 +907,15 @@ type RunWeeklyToolShapeProbeOptions = {
   signal: AbortSignal;
 };
 
-const runWeeklyToolShapeProbe = async ({
-  context,
-  signal,
-}: RunWeeklyToolShapeProbeOptions): Promise<void> => {
-  const observedInputs: unknown[] = [];
-  const { expectedInputs, prompt, tool } = createWeeklyToolShapeDefinition(
-    context.rotation.toolShape,
-    context.provider,
-    observedInputs,
-  );
-  const output = await runToolProbe({
-    context: { config: context.rotatedConfig, provider: context.provider },
-    maxOutputTokens: modelRoleMaxOutputTokens(TOOL_CALL_ROLE),
-    prompt,
-    role: TOOL_CALL_ROLE,
-    signal,
-    tool,
-  });
+type RequireWeeklyToolExecutionOptions = {
+  expectedInputs: readonly unknown[];
+  observedInputs: readonly unknown[];
+};
 
+export const requireWeeklyToolExecution = ({
+  expectedInputs,
+  observedInputs,
+}: RequireWeeklyToolExecutionOptions): void => {
   if (observedInputs.length !== 1) {
     throw new TypeError(
       "Provider did not execute the weekly canary tool exactly once.",
@@ -546,11 +931,28 @@ const runWeeklyToolShapeProbe = async ({
       "Provider returned unexpected weekly canary tool arguments.",
     );
   }
-  if (output.trim() !== WEEKLY_TOOL_RESULT) {
-    throw new TypeError(
-      "Provider did not return the weekly canary tool result.",
-    );
-  }
+};
+
+const runWeeklyToolShapeProbe = async ({
+  context,
+  signal,
+}: RunWeeklyToolShapeProbeOptions): Promise<void> => {
+  const observedInputs: unknown[] = [];
+  const { expectedInputs, prompt, tool } = createWeeklyToolShapeDefinition(
+    context.rotation.toolShape,
+    context.provider,
+    observedInputs,
+  );
+  await runToolProbe({
+    context: { config: context.rotatedConfig, provider: context.provider },
+    maxOutputTokens: modelRoleMaxOutputTokens(TOOL_CALL_ROLE),
+    prompt,
+    role: TOOL_CALL_ROLE,
+    signal,
+    tool,
+  });
+
+  requireWeeklyToolExecution({ expectedInputs, observedInputs });
 };
 
 type RunToolProbeOptions = {
@@ -577,7 +979,7 @@ const runToolProbe = async ({
   });
   const inputSchema = projectSchemaInputJsonSchema(
     tool.inputSchema,
-    providerSafeJsonSchemaOptionsForTanStackProvider(provider),
+    providerSafeJsonSchemaOptionsForTanStackProvider(provider, "tool"),
   );
   const projectedTool = {
     ...tool,
@@ -615,13 +1017,19 @@ const runToolProbe = async ({
       throw new CanaryProviderRunError(chunk, stage);
     }
   }
-  requireNonEmptyText(output);
   return output;
 };
 
 const requireNonEmptyText = (output: string): void => {
   if (output.trim().length === 0) {
     throw new TypeError("Provider returned no text.");
+  }
+};
+
+const requireExpectedRoleOutput = (output: string, role: ModelRole): void => {
+  requireNonEmptyText(output);
+  if (role === "pdf" && output.trim() !== PDF_CANARY_TOKEN) {
+    throw new TypeError("Provider did not read the attached PDF.");
   }
 };
 
@@ -763,7 +1171,40 @@ const probeLabel = (context: CanaryContext, probe: Probe): string => {
     return probe.name;
   }
 
-  return `role-${probe.role}:${DEFAULT_MODELS[context.provider][probe.role]}`;
+  const modelId =
+    probe.type === "model-role" && probe.role === "pdf"
+      ? pdfCanarySelection(context.provider)?.modelId
+      : DEFAULT_MODELS[context.provider][probe.role];
+  const prefix =
+    probe.type === "structured-output-role" ? "structured-role" : "role";
+  return `${prefix}-${probe.role}:${modelId ?? "unsupported"}`;
+};
+
+const attemptSummary = (attempts: number): string =>
+  attempts === 1 ? "" : ` after ${attempts} attempts`;
+
+type RecordProbeResultOptions = {
+  label: string;
+  provider: CanaryProvider;
+  result: CanaryProbeResult;
+};
+
+const recordProbeResult = ({
+  label,
+  provider,
+  result,
+}: RecordProbeResultOptions): number => {
+  if (result.status === "passed") {
+    console.log(
+      `[ai-canary] ${provider}/${label}: passed${attemptSummary(result.attempts)}`,
+    );
+    return 0;
+  }
+
+  console.error(
+    `[ai-canary] ${provider}/${label}: failed${attemptSummary(result.attempts)} (${errorSummary(result.error, result.signal)})`,
+  );
+  return 1;
 };
 
 const run = async (): Promise<void> => {
@@ -821,11 +1262,13 @@ const runProbes = async (
 
   const label = probeLabel(context, probe);
   if (
-    probe.type === "model-role" &&
-    !isBYOKProviderRoleSupported({
-      provider: context.provider,
-      role: probe.role,
-    })
+    probe.type !== "capability" &&
+    (probe.type === "model-role" && probe.role === "pdf"
+      ? pdfCanarySelection(context.provider) === null
+      : !isBYOKProviderRoleSupported({
+          provider: context.provider,
+          role: probe.role,
+        }))
   ) {
     console.log(
       `[ai-canary] ${context.provider}/${label}: skipped (unsupported role)`,
@@ -833,17 +1276,18 @@ const runProbes = async (
     return await runProbes(context, index + 1, failures);
   }
 
-  const signal = AbortSignal.timeout(probe.timeoutMs);
-  try {
-    await probe.run(context, signal);
-    console.log(`[ai-canary] ${context.provider}/${label}: passed`);
-    return await runProbes(context, index + 1, failures);
-  } catch (error) {
-    console.error(
-      `[ai-canary] ${context.provider}/${label}: failed (${errorSummary(error, signal)})`,
-    );
-    return await runProbes(context, index + 1, failures + 1);
-  }
+  const result = await runCanaryProbe({
+    run: async (signal) => {
+      await probe.run(context, signal);
+    },
+    timeoutMs: probe.timeoutMs,
+  });
+  const failureDelta = recordProbeResult({
+    label,
+    provider: context.provider,
+    result,
+  });
+  return await runProbes(context, index + 1, failures + failureDelta);
 };
 
 const runWeeklyCanaryProbes = async (
@@ -854,31 +1298,49 @@ const runWeeklyCanaryProbes = async (
 
   for (const role of context.rotation.modelRoles) {
     const label = `weekly-role-${role}:${context.rotation.modelId}`;
-    const signal = AbortSignal.timeout(MODEL_ROLE_PROBE_TIMEOUT_MS);
-    try {
-      // oxlint-disable-next-line no-await-in-loop -- role probes must stay sequential so the failure count and console output stay ordered.
-      await runWeeklyModelRoleProbe({ context, role, signal });
-      console.log(`[ai-canary] ${context.provider}/${label}: passed`);
-    } catch (error) {
-      console.error(
-        `[ai-canary] ${context.provider}/${label}: failed (${errorSummary(error, signal)})`,
-      );
-      totalFailures += 1;
-    }
+    // oxlint-disable-next-line no-await-in-loop -- role probes must stay sequential so provider rate limits and output remain deterministic.
+    const result = await runCanaryProbe({
+      run: async (signal) => {
+        await runWeeklyModelRoleProbe({ context, role, signal });
+      },
+      timeoutMs: MODEL_ROLE_PROBE_TIMEOUT_MS,
+    });
+    totalFailures += recordProbeResult({
+      label,
+      provider: context.provider,
+      result,
+    });
+
+    const structuredLabel = `weekly-structured-role-${role}:${context.rotation.modelId}`;
+    // oxlint-disable-next-line no-await-in-loop -- structured probes share the same provider quota and must remain sequential.
+    const structuredResult = await runCanaryProbe({
+      run: async (signal) => {
+        await runWeeklyStructuredOutputModelRoleProbe({
+          context,
+          role,
+          signal,
+        });
+      },
+      timeoutMs: MODEL_ROLE_PROBE_TIMEOUT_MS,
+    });
+    totalFailures += recordProbeResult({
+      label: structuredLabel,
+      provider: context.provider,
+      result: structuredResult,
+    });
   }
 
   const label = `weekly-tool-${context.rotation.toolShape}:${context.rotation.modelId}`;
-  const signal = AbortSignal.timeout(TOOL_ROUND_TRIP_PROBE_TIMEOUT_MS);
-  try {
-    await runWeeklyToolShapeProbe({ context, signal });
-    console.log(`[ai-canary] ${context.provider}/${label}: passed`);
-    return totalFailures;
-  } catch (error) {
-    console.error(
-      `[ai-canary] ${context.provider}/${label}: failed (${errorSummary(error, signal)})`,
-    );
-    return totalFailures + 1;
-  }
+  const result = await runCanaryProbe({
+    run: async (signal) => {
+      await runWeeklyToolShapeProbe({ context, signal });
+    },
+    timeoutMs: TOOL_ROUND_TRIP_PROBE_TIMEOUT_MS,
+  });
+  return (
+    totalFailures +
+    recordProbeResult({ label, provider: context.provider, result })
+  );
 };
 
 if (import.meta.main) {

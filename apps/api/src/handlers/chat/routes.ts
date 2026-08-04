@@ -1,6 +1,7 @@
 import Elysia from "elysia";
 
 import deleteThread from "@/api/handlers/chat/delete-thread";
+import createMessageExport from "@/api/handlers/chat/export/create";
 import getMessages from "@/api/handlers/chat/get-messages";
 import getModelOptions from "@/api/handlers/chat/get-model-options";
 import getOlderMessages from "@/api/handlers/chat/get-older-messages";
@@ -8,6 +9,7 @@ import getSuggestedPrompts from "@/api/handlers/chat/get-suggested-prompts";
 import getThreadRecap from "@/api/handlers/chat/get-thread-recap";
 import getThreadTitle from "@/api/handlers/chat/get-thread-title";
 import getThreads from "@/api/handlers/chat/get-threads";
+import improvePrompt from "@/api/handlers/chat/improve-prompt";
 import renameThread from "@/api/handlers/chat/rename-thread";
 import resolveFileThread from "@/api/handlers/chat/resolve-file-thread";
 import resolveTemplateThread from "@/api/handlers/chat/resolve-template-thread";
@@ -53,6 +55,11 @@ export const chatRoute = new Elysia({ prefix: "/chat" })
   })
   .get("/model-options", getModelOptions.handler, {
     permissions: getModelOptions.config.permissions,
+  })
+  .post("/improve-prompt", improvePrompt.handler, {
+    body: improvePrompt.config.body,
+    permissions: improvePrompt.config.permissions,
+    requiresUsage: improvePrompt.config.requiresUsage,
   })
   .delete("/threads/:threadId", deleteThread.handler, {
     params: deleteThread.config.params,
@@ -101,4 +108,10 @@ export const chatRoute = new Elysia({ prefix: "/chat" })
     params: getSuggestedPrompts.config.params,
     permissions: getSuggestedPrompts.config.permissions,
     query: getSuggestedPrompts.config.query,
+  })
+  .post("/threads/:threadId/export", createMessageExport.handler, {
+    body: createMessageExport.config.body,
+    params: createMessageExport.config.params,
+    permissions: createMessageExport.config.permissions,
+    query: createMessageExport.config.query,
   });

@@ -52,7 +52,7 @@ import {
 import { openEntityInInspector } from "@/components/chat/entity-open";
 import { navigateToWorkspaceFolder } from "@/components/chat/folder-navigation";
 import { FeedbackDialog } from "@/components/feedback-dialog";
-import { useInspectorStore } from "@/components/inspector/inspector-store";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import { MatterIcon } from "@/components/matter-icon";
 import { SearchDialog } from "@/components/search-dialog";
 import {
@@ -80,6 +80,14 @@ import {
   getWorkspacePrimaryNavItems,
   type WorkspacePrimaryNavId,
 } from "@/components/workspace-primary-nav";
+import { CopyToMatterDialog } from "@/components/workspaces/copy-to-matter-dialog";
+import type { CopyToMatterEntity } from "@/components/workspaces/copy-to-matter-dialog.logic";
+import { EntityKindIcon } from "@/components/workspaces/entity-kind-icon";
+import {
+  MatterMenuHeader,
+  MatterMenuItems,
+  useMatterActions,
+} from "@/components/workspaces/matter-context-menu";
 import {
   groupedChatThreadsOptions,
   mergeGroupedChatThreadPages,
@@ -95,27 +103,20 @@ import { useWorkflowsPreviewEnabled } from "@/hooks/use-workflows-preview";
 import { isPlaceholderThreadTitle } from "@/lib/chat-thread-title";
 import { SIDE_RAIL_ICON_BUTTON_SIZE } from "@/lib/consts";
 import { detached } from "@/lib/detached";
-import { HOTKEYS, NAV_KEY } from "@/lib/hotkeys";
+import { NAV_KEY } from "@/lib/hotkeys";
+import { knowledgeSections } from "@/lib/knowledge/navigation";
 import { resolveMatterColor } from "@/lib/matter-colors";
 import { usePinnedStore } from "@/lib/pinned-store";
 import { formatFullTimestamp, formatRelativeTime } from "@/lib/relative-time";
 import type { EntityKind } from "@/lib/types";
-import { knowledgeSections } from "@/routes/_protected.knowledge/index";
-import { CopyToMatterDialog } from "@/routes/_protected.workspaces/$workspaceId/-components/copy-to-matter-dialog";
-import type { CopyToMatterEntity } from "@/routes/_protected.workspaces/$workspaceId/-components/copy-to-matter-dialog.logic";
-import { ENTITY_DRAG_TYPE } from "@/routes/_protected.workspaces/$workspaceId/-components/drag-constants";
-import { EntityKindIcon } from "@/routes/_protected.workspaces/$workspaceId/-components/entity-kind-icon";
-import {
-  MatterMenuHeader,
-  MatterMenuItems,
-  useMatterActions,
-} from "@/routes/_protected.workspaces/-components/matter-context-menu";
-import { useUpdateWorkspace } from "@/routes/_protected.workspaces/-mutations";
+import { useEffectiveHotkey } from "@/lib/use-effective-shortcuts";
+import { useCreateMatterStore } from "@/lib/workspaces/create-matter-store";
+import { ENTITY_DRAG_TYPE } from "@/lib/workspaces/drag-constants";
+import { useUpdateWorkspace } from "@/lib/workspaces/mutations";
 import {
   workspaceActivityOptions,
   workspacesNavigationOptions,
-} from "@/routes/_protected.workspaces/-queries";
-import { useCreateMatterStore } from "@/routes/_protected.workspaces/-store/create-matter-store";
+} from "@/lib/workspaces/queries";
 
 // Scrollable group body. Hide the scrollbar in the collapsed icon rail (matches
 // SidebarContent); a thin track over the narrow icon strip reads as a bright
@@ -231,11 +232,12 @@ export function AppSidebar(props: AppSidebarProps) {
     });
   };
 
-  useHotkey(HOTKEYS.SEARCH, () => {
+  const searchHotkey = useEffectiveHotkey("search");
+  useHotkey(searchHotkey, () => {
     setSearchOpen((prev) => !prev);
   });
 
-  useHotkey(HOTKEYS.NEW_MATTER, () => {
+  useHotkey(useEffectiveHotkey("newMatter"), () => {
     handleCreateWorkspace();
   });
 
@@ -596,7 +598,7 @@ export function AppSidebar(props: AppSidebarProps) {
                         return (
                           <SidebarMenuBadge>
                             <kbd className="text-muted-foreground text-[0.625rem]">
-                              {formatForDisplay(HOTKEYS.SEARCH)}
+                              {formatForDisplay(searchHotkey)}
                             </kbd>
                           </SidebarMenuBadge>
                         );
@@ -1314,7 +1316,7 @@ const MatterActivityList = ({
   }: (typeof items)[number] & { type: "entity" }) => {
     const destination = resolveEntityActivityDestination(entityKind);
     if (destination.type === "task") {
-      useInspectorStore
+      useInspectorTabsStore
         .getState()
         .openTask({ taskId: entityId, workspaceId, label: title });
       return;
@@ -1336,8 +1338,8 @@ const MatterActivityList = ({
     }
 
     await navigate({
-      to: "/workspaces/$workspaceId/entities/$entityId",
-      params: { entityId, workspaceId },
+      to: "/workspaces/$workspaceId/$viewId",
+      params: { workspaceId, viewId: "all" },
     });
   };
 

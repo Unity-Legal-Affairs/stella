@@ -11,19 +11,6 @@ import {
   type PendingUploadPurposeData,
   workspaces,
 } from "@/api/db/schema";
-import { resolveUploadMime } from "@/api/handlers/files/utils";
-import {
-  checkEntityCreateCapacityForInsert,
-  checkEntityCreateParentForInsert,
-  checkEntityCreateTargetForInsert,
-  entityCreateWriteErrorMessage,
-  type EntityCreateWriteFailureStatus,
-} from "@/api/handlers/uploads/entity-create";
-import {
-  PRESIGN_URL_EXPIRY_SECONDS,
-  sha256HexToBase64,
-  tmpUploadKey,
-} from "@/api/handlers/uploads/lib";
 import {
   authorizeUploadPurpose,
   uploadRoutePermission,
@@ -37,10 +24,23 @@ import { createSafeId } from "@/api/lib/branded-types";
 import type { SafeId } from "@/api/lib/branded-types";
 import { tDefaultVarchar, tSafeId } from "@/api/lib/custom-schema";
 import { HandlerError } from "@/api/lib/errors/tagged-errors";
+import { resolveUploadMime } from "@/api/lib/files/utils";
 import { FILE_SIZE_LIMIT_BYTES, LIMITS } from "@/api/lib/limits";
 import { presignUploadUrl } from "@/api/lib/s3-presign";
 import { sanitizeFilename } from "@/api/lib/sanitize-filename";
 import { getSearchProvider } from "@/api/lib/search/provider";
+import {
+  checkEntityCreateCapacityForInsert,
+  checkEntityCreateParentForInsert,
+  checkEntityCreateTargetForInsert,
+  entityCreateWriteErrorMessage,
+  type EntityCreateWriteFailureStatus,
+} from "@/api/lib/uploads/entity-create";
+import {
+  PRESIGN_URL_EXPIRY_SECONDS,
+  sha256HexToBase64,
+  tmpUploadKey,
+} from "@/api/lib/uploads/runtime";
 
 const TREE_KEY_MAX_LENGTH = 512;
 

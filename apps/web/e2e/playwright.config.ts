@@ -1,6 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 import path from "node:path";
 
+import { resolveE2eExecutionProfile } from "./execution-profile";
+
 // Mirrors apps/api/scripts/seed-test-user.ts:349 — repo-root .playwright/
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 const STORAGE_STATE = path.resolve(REPO_ROOT, ".playwright/storage-state.json");
@@ -8,21 +10,25 @@ const STORAGE_STATE = path.resolve(REPO_ROOT, ".playwright/storage-state.json");
 const WEB_BASE_URL = process.env["E2E_WEB_URL"] ?? "http://localhost:3000";
 const API_BASE_URL = process.env["E2E_API_URL"] ?? "http://localhost:3001";
 const IS_CI = process.env["CI"] !== undefined;
+const executionProfile = resolveE2eExecutionProfile(
+  process.env["E2E_EXECUTION_PROFILE"],
+);
 
 export default defineConfig({
   testDir: "./specs",
-  // Each spec creates and tears down its own workspace, so parallelism
-  // is safe. Capped at 4 locally to keep Postgres/MinIO contention
-  // modest; serial in CI because two specs cold-compiling heavy route
-  // chunks (folio, chat) on a 2-core runner starve each other past
-  // their expect timeouts.
+  // The production CI profile pairs two workers with four isolated route-smoke
+  // groups. Other CI checks stay single-worker; local runs retain four workers.
   fullyParallel: true,
-  workers: IS_CI ? 1 : 4,
+  workers: IS_CI ? executionProfile.workerCount : 4,
   // CI failures are almost always real (server logs, traces tell the story).
   // Retries hide flakes; fix them in code instead.
   retries: 0,
   reporter: IS_CI
-    ? [["github"], ["html", { open: "never" }], ["list"]]
+    ? [
+        ["blob", { outputDir: "test-results/blob-report" }],
+        ["github"],
+        ["list"],
+      ]
     : [["list"], ["html", { open: "never" }]],
   // Cold Vite + folio editor compile on a fresh CI runner can use 25-30s
   // before the first locator runs, leaving no headroom for in-spec

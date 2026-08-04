@@ -46,6 +46,10 @@ import { Textarea } from "@stll/ui/components/textarea";
 import { stellaToast } from "@stll/ui/components/toast";
 import { cn } from "@stll/ui/lib/utils";
 
+import type {
+  ClauseBody,
+  ClauseParagraph,
+} from "@/components/templates/clause-editor-types";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { useLatestCallback } from "@/hooks/use-latest-callback";
 import { getAnalytics } from "@/lib/analytics/provider";
@@ -64,10 +68,9 @@ import {
   reviewResolutionStatus,
   settleReviewPersist,
 } from "./clause-ai-tracked-changes";
-import { ClauseDirectiveNode } from "./clause-directive-extension";
 import "./clause-editor.css";
+import { ClauseDirectiveNode } from "./clause-directive-extension";
 import { clauseBodyToTipTap, tipTapToClauseBody } from "./clause-editor-tiptap";
-import type { ClauseBody, ClauseParagraph } from "./clause-editor-types";
 import {
   DELETION_MARK,
   DeletionMark,
@@ -302,7 +305,7 @@ export const ClauseEditor = ({
   const contentKey = bodyKey(content);
   const editorReady = isUsableEditor(editor);
 
-  useExternalSyncEffect(() => {
+  const syncExternalContent = useLatestCallback(() => {
     if (!isUsableEditor(editor)) {
       return undefined;
     }
@@ -327,9 +330,8 @@ export const ClauseEditor = ({
       lastEmittedKeyRef.current = contentKey;
     }
     return undefined;
-    // eslint-disable-next-line react/react-compiler -- the exhaustive-deps exception below intentionally opts this editor effect out of compiler memoization
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- editor is a stable ref; only re-sync when contentKey changes
-  }, [contentKey]);
+  });
+  useExternalSyncEffect(syncExternalContent, [contentKey, syncExternalContent]);
 
   // The editor's actual on-screen content, not the `content` prop: the
   // debounced autosave means the prop can lag behind live keystrokes (an

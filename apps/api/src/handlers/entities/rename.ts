@@ -45,6 +45,7 @@ export const renameEntityHandler = async function* ({
       const entityRows = await tx
         .select({
           id: entities.id,
+          kind: entities.kind,
           name: entities.name,
           readOnly: entities.readOnly,
         })
@@ -100,7 +101,7 @@ export const renameEntityHandler = async function* ({
           return cv.fields.find((f) => f.content.type === "file");
         });
 
-      if (fileField && fileField.content.type === "file") {
+      if (fileField?.content.type === "file") {
         await tx
           .update(fields)
           .set({
@@ -116,6 +117,7 @@ export const renameEntityHandler = async function* ({
         action: AUDIT_ACTION.UPDATE,
         resourceType: AUDIT_RESOURCE_TYPE.ENTITY,
         resourceId: body.entityId,
+        metadata: { kind: entity.kind },
         changes: {
           name: {
             old: entity.name,

@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
-import { ArrowLeftIcon, LayoutTemplateIcon, SearchIcon } from "lucide-react";
+import { ArrowLeftIcon, LayoutTemplateIcon } from "lucide-react";
 import { useTranslations } from "use-intl";
 
 import { Button } from "@stll/ui/components/button";
@@ -17,12 +17,12 @@ import {
 import { DirectionalIcon } from "@stll/ui/components/directional-icon";
 import { Input } from "@stll/ui/components/input";
 
+import { TemplateForm } from "@/components/templates/template-form";
+import { useTemplateFillSchema } from "@/components/templates/use-template-fill-schema";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { detached } from "@/lib/detached";
-import { TemplateForm } from "@/routes/_protected.knowledge/-components/template-form";
-import { useTemplateFillSchema } from "@/routes/_protected.knowledge/-components/use-template-fill-schema";
-import { templatesOptions } from "@/routes/_protected.knowledge/-queries";
-import { entitiesKeys } from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
+import { templatesOptions } from "@/lib/knowledge/queries";
+import { entitiesKeys } from "@/lib/workspaces/queries/entities";
 
 /**
  * "New document from template" inside a matter: pick a saved template
@@ -167,20 +167,13 @@ const TemplatePickList = ({
 
   return (
     <div className="flex min-h-0 flex-col gap-2 p-4">
-      <div className="relative">
-        <SearchIcon
-          aria-hidden="true"
-          className="text-muted-foreground pointer-events-none absolute start-2.5 top-1/2 size-3.5 -translate-y-1/2"
-        />
-        <Input
-          autoFocus
-          className="ps-8"
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={t("templates.searchTemplates")}
-          type="search"
-          value={search}
-        />
-      </div>
+      <Input
+        autoFocus
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder={t("templates.searchTemplates")}
+        type="search"
+        value={search}
+      />
       <ul className="min-h-0 flex-1 divide-y overflow-y-auto rounded-lg border">
         {visibleTemplates.length === 0 && (
           <li className="text-muted-foreground p-3 text-sm">
@@ -252,22 +245,39 @@ const FillStep = ({
         kind: "matter",
         workspaceId,
         parentId,
-        onCreated: (entityId) => {
-          queryClient
-            .invalidateQueries({ queryKey: entitiesKeys.all(workspaceId) })
-            .catch(() => {
-              /* fire-and-forget */
-            });
+        onCreated: (created) => {
+          const { entityId } = created;
+          detached(
+            queryClient.invalidateQueries({
+              queryKey: entitiesKeys.all(workspaceId),
+            }),
+            "NewDocumentFromTemplate.invalidateCreatedDocument",
+          );
           onCreated();
-          // Open the just-created document in the editable Folio editor (the
-          // entities route resolves the file field and redirects into the
-          // document view) so the user can hand-edit it right away.
-          navigate({
-            to: "/workspaces/$workspaceId/entities/$entityId",
-            params: { workspaceId, entityId },
-          }).catch(() => {
-            /* navigation is best-effort; the document is already saved */
-          });
+          switch (created.type) {
+            case "document":
+              // Open the just-created document in the editable Folio editor.
+              detached(
+                navigate({
+                  to: "/workspaces/$workspaceId/$viewId/document",
+                  params: { workspaceId, viewId: "all" },
+                  search: { entity: entityId, field: created.fieldId },
+                }),
+                "NewDocumentFromTemplate.openCreatedDocument",
+              );
+              return;
+            case "workspace":
+              detached(
+                navigate({
+                  to: "/workspaces/$workspaceId/$viewId",
+                  params: { workspaceId, viewId: "all" },
+                }),
+                "NewDocumentFromTemplate.openCreatedWorkspace",
+              );
+              return;
+            default:
+              created satisfies never;
+          }
         },
       }}
       structureErrors={fill.schema.structureErrors}

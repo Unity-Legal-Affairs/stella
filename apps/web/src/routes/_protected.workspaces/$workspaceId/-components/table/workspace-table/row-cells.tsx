@@ -18,23 +18,31 @@ import { containedHandler } from "@stll/ui/hooks/use-contained-handler";
 import { cn } from "@stll/ui/lib/utils";
 
 import { renderDragPreview } from "@/components/drag-preview";
+import { InlineEdit } from "@/components/inline-edit";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import Tooltip from "@/components/tooltip";
-import { useExternalSyncEffect } from "@/hooks/use-effect";
-import { TOOLBAR_ROW_HEIGHT } from "@/lib/consts";
-import { toSafeId } from "@/lib/safe-id";
-import type { PropertyId } from "@/lib/types";
-import { ENTITY_DRAG_TYPE } from "@/routes/_protected.workspaces/$workspaceId/-components/drag-constants";
-import { InlineEdit } from "@/routes/_protected.workspaces/$workspaceId/-components/inline-edit";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
-import { RowActions } from "@/routes/_protected.workspaces/$workspaceId/-components/row-actions";
-import type { VirtualAnchor } from "@/routes/_protected.workspaces/$workspaceId/-components/row-actions";
+import {
+  getEntityName,
+  getFirstFile,
+} from "@/components/workspaces/entity-utils";
 import type {
   TableCell,
   TableColumn,
   TableRow,
   TableTreeNode,
   WorkspaceTable as WorkspaceTableType,
-} from "@/routes/_protected.workspaces/$workspaceId/-components/table/types";
+} from "@/components/workspaces/table/types";
+import { useExternalSyncEffect } from "@/hooks/use-effect";
+import { TOOLBAR_ROW_HEIGHT } from "@/lib/consts";
+import { toSafeId } from "@/lib/safe-id";
+import type { PropertyId } from "@/lib/types";
+import { ENTITY_DRAG_TYPE } from "@/lib/workspaces/drag-constants";
+import { RowActions } from "@/routes/_protected.workspaces/$workspaceId/-components/row-actions";
+import type { VirtualAnchor } from "@/routes/_protected.workspaces/$workspaceId/-components/row-actions";
+import {
+  getOcrSource,
+  getOcrSources,
+} from "@/routes/_protected.workspaces/$workspaceId/-components/row-actions.logic";
 import {
   WorkspaceGridCell,
   WorkspaceGridRow,
@@ -55,10 +63,6 @@ import { VersionOrNewFileDialog } from "@/routes/_protected.workspaces/$workspac
 import type { TableContentMode } from "@/routes/_protected.workspaces/$workspaceId/-hooks/table-store";
 import { useInspectorFlash } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-inspector-flash";
 import { useVersionOrNewFileDrop } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-version-or-new-file-drop";
-import {
-  getEntityName,
-  getFirstFile,
-} from "@/routes/_protected.workspaces/$workspaceId/-utils";
 
 const shouldIgnoreRowExpansionClick = (target: EventTarget) => {
   if (!(target instanceof HTMLElement)) {
@@ -246,7 +250,7 @@ export const DraggableRow = ({
     activeTaskId,
     entityId: entity.entityId,
   });
-  const activationSeq = useInspectorStore((s) => s.activationSeq);
+  const activationSeq = useInspectorTabsStore((s) => s.activationSeq);
 
   useInspectorFlash(entity.entityId, rowRef, {
     enabled: activeCellPropertyId === null,
@@ -291,7 +295,7 @@ export const DraggableRow = ({
       return;
     }
 
-    useInspectorStore.getState().openTask({
+    useInspectorTabsStore.getState().openTask({
       taskId: entity.entityId,
       workspaceId,
       label: name,
@@ -335,6 +339,13 @@ export const DraggableRow = ({
     <RowActions
       anchor={contextAnchor}
       entity={entity}
+      ocrSource={
+        getOcrSource({
+          fields: entity.fields,
+          propertyId: contextPropertyId,
+        }) ?? undefined
+      }
+      ocrSources={getOcrSources(entity.fields)}
       onOpenChange={(open) => {
         if (open) {
           setBulkEntities(getBulkSelectedEntities());
@@ -357,7 +368,7 @@ export const DraggableRow = ({
             }
           : null
       }
-      triggerClassName="opacity-0! transition-opacity group-hover/row:opacity-100! focus-visible:opacity-100!"
+      triggerClassName="size-11 min-h-11 min-w-11 opacity-0! transition-opacity group-hover/row:opacity-100! focus-visible:opacity-100!"
       workspaceId={workspaceId}
     />
   );

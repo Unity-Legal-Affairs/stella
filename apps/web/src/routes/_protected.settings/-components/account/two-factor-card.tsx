@@ -27,7 +27,6 @@ import {
   FramePanel,
   FrameTitle,
 } from "@stll/ui/components/frame";
-import { Input } from "@stll/ui/components/input";
 import {
   InputOTP,
   InputOTPGroup,
@@ -35,6 +34,7 @@ import {
 } from "@stll/ui/components/input-otp";
 import { stellaToast } from "@stll/ui/components/toast";
 
+import { SecretInput } from "@/components/secret-input";
 import { useAnalytics } from "@/lib/analytics/provider";
 import { api } from "@/lib/api";
 import {
@@ -42,10 +42,10 @@ import {
   HTTP_TOO_MANY_REQUESTS,
   isTwoFactorEnabledUser,
 } from "@/lib/auth";
+import { sessionOptions } from "@/lib/auth-queries";
 import { detached } from "@/lib/detached";
 import { toAPIError } from "@/lib/errors/api";
 import { toAuthClientError } from "@/lib/errors/auth";
-import { sessionOptions } from "@/routes/-queries";
 
 const TOTP_LENGTH = 6;
 const HTTP_BAD_REQUEST = 400;
@@ -414,7 +414,7 @@ const EnableTwoFactorDialog = ({
         <div className="flex flex-col gap-4 px-6 pb-6">
           {step === "setup" && showPasswordGate && !enableQuery.isFetching && (
             <div className="flex flex-col gap-2">
-              <Input
+              <SecretInput
                 autoComplete="current-password"
                 autoFocus
                 onChange={(e) => setPassword(e.target.value)}
@@ -425,7 +425,6 @@ const EnableTwoFactorDialog = ({
                   }
                 }}
                 placeholder={t("auth.password")}
-                type="password"
                 value={password}
               />
               {enableQuery.isError && (
@@ -681,12 +680,11 @@ const DisableTwoFactorDialog = ({
         </DialogHeader>
         {step === "confirm" && requiresPassword === true && (
           <div className="flex flex-col gap-2 px-6 pb-2">
-            <Input
+            <SecretInput
               autoComplete="current-password"
               autoFocus
               onChange={(e) => setPassword(e.target.value)}
               placeholder={t("auth.password")}
-              type="password"
               value={password}
             />
           </div>
@@ -868,12 +866,11 @@ const RegenerateBackupCodesDialog = ({
         </DialogHeader>
         {step === "confirm" && requiresPassword === true && (
           <div className="flex flex-col gap-2 px-6 pb-2">
-            <Input
+            <SecretInput
               autoComplete="current-password"
               autoFocus
               onChange={(e) => setPassword(e.target.value)}
               placeholder={t("auth.password")}
-              type="password"
               value={password}
             />
           </div>

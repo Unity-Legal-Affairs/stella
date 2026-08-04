@@ -41,8 +41,8 @@ import type { FileTreeNode } from "@/components/file-tree/file-tree";
 import { FolderExpandToggle } from "@/components/file-tree/folder-expand-toggle";
 import {
   buildSkillResourceTabId,
-  useInspectorStore,
-} from "@/components/inspector/inspector-store";
+  useInspectorTabsStore,
+} from "@/components/inspector/inspector-tabs-store";
 import { MarkdownIcon } from "@/components/markdown-icon";
 import { useMountEffect } from "@/hooks/use-effect";
 import { useLocale } from "@/i18n/formatting-context";
@@ -52,12 +52,9 @@ import { MARKDOWN_MIME, isMarkdownFile } from "@/lib/consts";
 import { detached } from "@/lib/detached";
 import { APIError, unwrapEden } from "@/lib/errors/api";
 import { userErrorFromThrown } from "@/lib/errors/user-safe";
+import { knowledgeKeys, skillDetailOptions } from "@/lib/knowledge/queries";
+import { catalogueKeys } from "@/lib/knowledge/queries/catalogue";
 import { toSafeId } from "@/lib/safe-id";
-import {
-  knowledgeKeys,
-  skillDetailOptions,
-} from "@/routes/_protected.knowledge/-queries";
-import { catalogueKeys } from "@/routes/_protected.knowledge/-queries/catalogue";
 
 import {
   FILENAME_PATTERN,
@@ -126,8 +123,10 @@ export function SkillEditor({ skillId }: SkillEditorProps) {
   const activeOrganizationId = protectedRouteApi.useRouteContext({
     select: (ctx) => ctx.user.activeOrganizationId,
   });
-  const openSkillResourceTab = useInspectorStore((s) => s.openSkillResourceTab);
-  const openChat = useInspectorStore((s) => s.openChat);
+  const openSkillResourceTab = useInspectorTabsStore(
+    (s) => s.openSkillResourceTab,
+  );
+  const openChat = useInspectorTabsStore((s) => s.openChat);
 
   const detail = useQuery(skillDetailOptions(activeOrganizationId, skillId));
 
@@ -424,7 +423,7 @@ export function SkillEditor({ skillId }: SkillEditorProps) {
         skillName,
         resourcePath: result.path,
       });
-      const { tabs, closeTab } = useInspectorStore.getState();
+      const { tabs, closeTab } = useInspectorTabsStore.getState();
       if (tabs.some((tab) => tab.id === tabId)) {
         closeTab(tabId);
       }
@@ -461,9 +460,9 @@ export function SkillEditor({ skillId }: SkillEditorProps) {
         skillName,
         resourcePath: variables.oldPath,
       });
-      const { tabs, closeTab } = useInspectorStore.getState();
+      const { tabs, closeTab } = useInspectorTabsStore.getState();
       const openTab = tabs.find((tab) => tab.id === oldTabId);
-      if (openTab && openTab.type === "skill-resource") {
+      if (openTab?.type === "skill-resource") {
         closeTab(oldTabId);
         openResourceInInspector({ path: data.path, content: openTab.content });
       }

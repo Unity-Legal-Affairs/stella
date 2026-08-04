@@ -1,13 +1,7 @@
 import { Result } from "better-result";
-import { eq } from "drizzle-orm";
 import { t } from "elysia";
 
-import { entities, templateFills } from "@/api/db/schema";
-import { clauseBodySchema } from "@/api/handlers/clauses/shared-schemas";
-import { createEntityFromBuffer } from "@/api/handlers/entities/create-from-buffer";
-import { containsNull } from "@/api/handlers/templates/fill";
-import { fillStoredTemplateDocx } from "@/api/handlers/templates/template-fill-service";
-import { captureError } from "@/api/lib/analytics/capture";
+import { templateFills } from "@/api/db/schema";
 import { createTanStackAIAnalyticsCallbacks } from "@/api/lib/analytics/tanstack-ai";
 import {
   assertUsageAvailableForHandler,
@@ -15,15 +9,19 @@ import {
 } from "@/api/lib/api-handlers";
 import type { HandlerConfig } from "@/api/lib/api-handlers";
 import { AUDIT_ACTION, AUDIT_RESOURCE_TYPE } from "@/api/lib/audit-log";
+import { clauseBodySchema } from "@/api/lib/clauses/body-schema";
 import { tSafeId, workspaceParams } from "@/api/lib/custom-schema";
 import {
   buildAiConditionDecider,
   buildAiFieldGenerator,
   buildAiOccurrenceAdapter,
 } from "@/api/lib/docx/ai-field-generator";
+import { createEntityFromBuffer } from "@/api/lib/entities/create-from-buffer";
 import { HandlerError } from "@/api/lib/errors/tagged-errors";
 import { DOCX_EXT_RE, sanitizeFilename } from "@/api/lib/sanitize-filename";
 import { hasTanStackInstanceProvider } from "@/api/lib/tanstack-ai-models";
+import { containsNull } from "@/api/lib/templates/template-data";
+import { fillStoredTemplateDocx } from "@/api/lib/templates/template-fill-service";
 import { isRecord } from "@/api/lib/type-guards";
 import { DOCX_MIME_TYPE } from "@/api/mime-types";
 
@@ -62,7 +60,7 @@ const resolveDocumentFileName = (
 const config = {
   permissions: { template: ["use"], entity: ["create"] },
   access: "write",
-  mcp: { type: "covered", by: "fill_template" },
+  mcp: { type: "covered", by: "save_filled_template" },
   params: fillToWorkspaceParamsSchema,
   body: fillToWorkspaceBodySchema,
 } satisfies HandlerConfig;
@@ -243,6 +241,7 @@ const fillTemplateToWorkspace = createSafeHandler(
             buffer: filled.buffer,
             fileName,
             mimeType: DOCX_MIME_TYPE,
+            parentId,
           }),
         catch: (cause) =>
           new HandlerError({
@@ -260,27 +259,6 @@ const fillTemplateToWorkspace = createSafeHandler(
     }
 
     const entityId = created.value.entityId;
-
-    if (parentId !== null) {
-      // Re-parent after creation (the shared creator always lands at root).
-      // The parent was validated above; if it vanished in between, the FK
-      // rejects and the document simply stays at the workspace root.
-      const reparented = await Result.tryPromise({
-        try: async () =>
-          await scopedDb(async (tx) => {
-            // audit: skip — placement detail of an entity creation that was
-            // already audited (createEntityFromBuffer records the CREATE).
-            await tx
-              .update(entities)
-              .set({ parentId })
-              .where(eq(entities.id, entityId));
-          }),
-        catch: (cause) => cause,
-      });
-      if (Result.isError(reparented)) {
-        captureError(reparented.error, { entityId, parentId });
-      }
-    }
 
     const fillStatus =
       filled.unmatchedPlaceholders.length > 0 ? "partial" : "success";
@@ -325,6 +303,7 @@ const fillTemplateToWorkspace = createSafeHandler(
 
     return Result.ok({
       entityId,
+      fieldId: created.value.fieldId,
       fileName: created.value.fileName,
       unmatchedPlaceholders: filled.unmatchedPlaceholders,
       unusedValues: filled.unusedValues,

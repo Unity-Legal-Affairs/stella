@@ -10,6 +10,7 @@ import { ChatMattersContext } from "@/components/chat/chat-matters-context";
 import type { PersistedChatMessage } from "@/components/chat/chat-ui-tools";
 import messages from "@/i18n/langs/en.json";
 import type Messages from "@/i18n/langs/messages.gen";
+import { toChatThreadId } from "@/lib/chat-thread-ref";
 
 const previousApiUrl = process.env["VITE_API_URL"];
 process.env["VITE_API_URL"] = previousApiUrl ?? "https://api.example.test";
@@ -141,6 +142,100 @@ describe("chat thread messages", () => {
     expect(html).toContain(">Copy</button>");
   });
 
+  test("renders persisted audio, video, and sandboxed app output", () => {
+    const chatMessages: PersistedChatMessage[] = [
+      {
+        id: "message-rich",
+        role: "assistant",
+        parts: [
+          {
+            type: "audio",
+            source: {
+              type: "url",
+              value: "https://example.test/audio.mp3",
+              mimeType: "audio/mpeg",
+            },
+          },
+          {
+            type: "video",
+            source: {
+              type: "url",
+              value: "https://example.test/video.mp4",
+              mimeType: "video/mp4",
+            },
+          },
+          {
+            type: "ui-resource",
+            resource: {
+              uri: "ui://widget",
+              mimeType: "text/html;profile=mcp-app",
+              text: "<p>Widget</p>",
+            },
+            toolCallId: "call-1",
+            toolName: "widget",
+          },
+        ],
+      },
+    ];
+
+    const html = renderWithProviders(
+      <ChatThreadMessages
+        approvalPendingMessageId={null}
+        messages={chatMessages}
+        onAskUserSubmit={() => {}}
+        onCreateDocumentResolve={() => {}}
+        onOpenCreatedDocument={() => {}}
+        streamdownComponents={{
+          a: ({ children, ...props }) => <a {...props}>{children}</a>,
+        }}
+      />,
+    );
+
+    expect(html).toContain('aria-label="Generated audio"');
+    expect(html).toContain('preload="none"');
+    expect(html).not.toContain('preload="metadata"');
+    expect(html).toContain('src="https://example.test/audio.mp3"');
+    expect(html).toContain('aria-label="Generated video"');
+    expect(html).toContain('src="https://example.test/video.mp4"');
+    expect(html).toContain("Loading interactive content…");
+    expect(html).not.toContain("&lt;p&gt;Widget&lt;/p&gt;");
+  });
+
+  test("keeps historical exports available while the latest answer streams", () => {
+    const chatMessages: PersistedChatMessage[] = [
+      {
+        id: "message-old",
+        parts: [{ type: "text", content: "Completed answer" }],
+        role: "assistant",
+      },
+      {
+        id: "message-latest",
+        parts: [{ type: "text", content: "Streaming answer" }],
+        role: "assistant",
+      },
+    ];
+
+    const html = renderWithProviders(
+      <ChatThreadMessages
+        approvalPendingMessageId={null}
+        isGenerating
+        messages={chatMessages}
+        onAskUserSubmit={() => {}}
+        onCreateDocumentResolve={() => {}}
+        onOpenCreatedDocument={() => {}}
+        streamdownComponents={{
+          a: ({ children, ...props }) => <a {...props}>{children}</a>,
+        }}
+        threadRef={{
+          scope: "global",
+          threadId: toChatThreadId("thread"),
+        }}
+      />,
+    );
+
+    expect(html.match(/aria-label="Save message"/gu)).toHaveLength(1);
+  });
+
   test("renders assistant reasoning separately from the final answer", () => {
     const chatMessages: PersistedChatMessage[] = [
       {
@@ -253,11 +348,16 @@ describe("chat thread messages", () => {
     expect(html).toContain("Searching chat history");
   });
 
-  test("keeps assistant reasoning visible while it is the only streaming content", () => {
+  test("keeps streaming reasoning visible and immediately collapsible", () => {
     const chatMessages: PersistedChatMessage[] = [
       {
         id: "message-A",
-        parts: [{ type: "thinking", content: "Reading cited documents." }],
+        parts: [
+          {
+            type: "thinking",
+            content: "## **Reading cited documents** with `create-document`.",
+          },
+        ],
         role: "assistant",
       },
     ];
@@ -276,8 +376,11 @@ describe("chat thread messages", () => {
       />,
     );
 
-    expect(html).not.toContain("<details");
-    expect(html).toContain("Reading cited documents.");
+    expect(html).toContain("<details");
+    expect(html).toContain('open=""');
+    expect(html).toContain("Reading cited documents with create-document.");
+    expect(html).not.toContain("**");
+    expect(html).not.toContain("animate-pulse");
     expect(html).not.toContain("Working with context");
   });
 
@@ -310,6 +413,126 @@ describe("chat thread messages", () => {
     expect(html).not.toContain("<details open");
     expect(html).toContain("Checking cited filings.");
     expect(html).not.toContain("Working with context");
+  });
+
+  test("preserves generated document filename casing in the preview", () => {
+    const input = {
+      name: "Dohoda_o_ochrane_duvernych_informaci_NDA",
+      source:
+        "@doc kind=agreement locale=cs page=A4\n@title Dohoda\n**Smluvní strany:** Poskytovatel a příjemce",
+    };
+    const chatMessages: PersistedChatMessage[] = [
+      {
+        id: "message-document",
+        parts: [
+          {
+            type: "tool-call",
+            id: "tool-document",
+            name: "create-document",
+            arguments: JSON.stringify(input),
+            state: "input-complete",
+            input,
+          },
+        ],
+        role: "assistant",
+      },
+    ];
+
+    const html = renderWithProviders(
+      <ChatThreadMessages
+        approvalPendingMessageId={null}
+        messages={chatMessages}
+        onAskUserSubmit={() => {}}
+        onCreateDocumentResolve={() => {}}
+        onOpenCreatedDocument={() => {}}
+        streamdownComponents={{
+          a: ({ children, ...props }) => <a {...props}>{children}</a>,
+        }}
+      />,
+    );
+
+    expect(html).toContain("Dohoda_o_ochrane_duvernych_informaci_NDA.docx");
+    expect(html).toContain("Smluvní strany: Poskytovatel a příjemce");
+    expect(html).not.toContain("**Smluvní strany:**");
+    expect(html).not.toContain("tracking-wide uppercase");
+  });
+
+  test("renders a terminal generated-document state as a failure", () => {
+    const chatMessages: PersistedChatMessage[] = [
+      {
+        id: "message-document-error",
+        parts: [
+          {
+            type: "tool-call",
+            id: "tool-document-error",
+            name: "create-document",
+            arguments: "{}",
+            state: "error",
+          },
+        ],
+        role: "assistant",
+      },
+    ];
+
+    const html = renderWithProviders(
+      <ChatThreadMessages
+        approvalPendingMessageId={null}
+        messages={chatMessages}
+        onAskUserSubmit={() => {}}
+        onCreateDocumentResolve={() => {}}
+        onOpenCreatedDocument={() => {}}
+        streamdownComponents={{
+          a: ({ children, ...props }) => <a {...props}>{children}</a>,
+        }}
+      />,
+    );
+
+    expect(html).toContain("Could not create document");
+    expect(html).not.toContain("Document ready");
+  });
+
+  test("offers an explicit way to reopen a closed generated draft", () => {
+    const input = {
+      name: "Power of attorney",
+      source: "@doc kind=other locale=en page=A4\n@title Power of attorney",
+    };
+    const chatMessages: PersistedChatMessage[] = [
+      {
+        id: "message-document-ready",
+        parts: [
+          {
+            type: "tool-call",
+            id: "tool-document-ready",
+            name: "create-document",
+            arguments: JSON.stringify(input),
+            input,
+            output: {
+              success: true,
+              destination: "draft",
+              fileName: "Power of attorney.docx",
+            },
+            state: "complete",
+          },
+        ],
+        role: "assistant",
+      },
+    ];
+
+    const html = renderWithProviders(
+      <ChatThreadMessages
+        approvalPendingMessageId={null}
+        messages={chatMessages}
+        onAskUserSubmit={() => {}}
+        onCreateDocumentResolve={() => {}}
+        onOpenCreateDocumentDraft={() => {}}
+        onOpenCreatedDocument={() => {}}
+        streamdownComponents={{
+          a: ({ children, ...props }) => <a {...props}>{children}</a>,
+        }}
+      />,
+    );
+
+    expect(html).toContain("Open in editor");
   });
 
   test("uses generated thumbnail URLs for image attachments with placeholders", () => {

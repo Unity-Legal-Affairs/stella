@@ -1,12 +1,12 @@
 {
-  "entry": 1307,
+  "entry": 1223,
   "largest-route": 568513,
-  "routes": 5399083,
-  "total": 6236510,
+  "routes": 6091839,
+  "total": 6940555,
   "vendor-anonymize-data": 0,
-  "vendor-editor": 122318,
-  "vendor-graphs": 189345,
-  "vendor-react": 56604,
-  "vendor-tanstack": 467853,
+  "vendor-editor": 120430,
+  "vendor-graphs": 189783,
+  "vendor-react": 56621,
+  "vendor-tanstack": 480659,
   "wasm-vendor": 0
 }

@@ -21,6 +21,7 @@ import readEntities from "@/api/handlers/entities/list";
 import listFiles from "@/api/handlers/entities/list-files";
 import listFolders from "@/api/handlers/entities/list-folders";
 import moveEntity from "@/api/handlers/entities/move";
+import requestOcr from "@/api/handlers/entities/ocr/create";
 import openDesktopEditSession from "@/api/handlers/entities/open-desktop-edit-session";
 import openFolioCollabSession from "@/api/handlers/entities/open-folio-collab-session";
 import organizeSuggestions from "@/api/handlers/entities/organize-suggestions";
@@ -41,7 +42,9 @@ import restoreVersion from "@/api/handlers/entities/restore-version";
 import translateEntity from "@/api/handlers/entities/translate";
 import updateVersionDescription from "@/api/handlers/entities/update-version-description";
 import updateVersionLabel from "@/api/handlers/entities/update-version-label";
-import uploadEntity from "@/api/handlers/entities/upload";
+import uploadEntity, {
+  uploadGeneratedDocument,
+} from "@/api/handlers/entities/upload";
 import {
   isTranslateRateLimitedPath,
   isUploadRateLimitedPath,
@@ -106,6 +109,11 @@ export const entitiesRoute = new Elysia({
     body: uploadEntity.config.body,
     invalidateQuery: true,
     permissions: uploadEntity.config.permissions,
+  })
+  .post("/upload-generated-document", uploadGeneratedDocument.handler, {
+    body: uploadGeneratedDocument.config.body,
+    invalidateQuery: true,
+    permissions: uploadGeneratedDocument.config.permissions,
   })
   .post("/desktop-edit-sessions/open", openDesktopEditSession.handler, {
     body: openDesktopEditSession.config.body,
@@ -242,6 +250,11 @@ export const entitiesRoute = new Elysia({
   .get("/entity/:entityId/field/:fieldId/file", readFieldFile.handler, {
     params: readFieldFile.config.params,
     permissions: readFieldFile.config.permissions,
+  })
+  .post("/entity/:entityId/ocr", requestOcr.handler, {
+    body: requestOcr.config.body,
+    params: requestOcr.config.params,
+    permissions: requestOcr.config.permissions,
   })
   .get("/entity/:entityId/versions/:versionId/diff", versionDiff.handler, {
     params: versionDiff.config.params,

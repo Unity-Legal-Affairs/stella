@@ -6,21 +6,21 @@ import type { DocumentAst } from "@stll/legal-ast/document-ast";
 
 import { caseLawDecisions, caseLawSources } from "@/api/db/schema";
 import { corpusStorageMode } from "@/api/env-base";
+import { hasUsableAst } from "@/api/handlers/case-law/document-ast";
+import { corpusCarriesDocument } from "@/api/handlers/case-law/stored-payload";
+import type { SafeId } from "@/api/lib/branded-types";
+import type { CaseLawPublicReadDb } from "@/api/lib/case-law-public-read-db";
+import { redistributableCaseLawSource } from "@/api/lib/case-law/redistribution";
 import {
   allowsDerivedAi,
   isRedistributable,
-} from "@/api/handlers/case-law/corpus-source";
+} from "@/api/lib/legal-search/corpus-source";
 import {
   readCorpusAst,
   readCorpusPayloadOrFallback,
   readCorpusText,
-} from "@/api/handlers/case-law/corpus-storage";
-import { hasUsableAst } from "@/api/handlers/case-law/document-ast";
-import type { EmptyAst } from "@/api/handlers/case-law/ingestion/adapter";
-import { redistributableCaseLawSource } from "@/api/handlers/case-law/redistribution";
-import { corpusCarriesDocument } from "@/api/handlers/case-law/stored-payload";
-import type { SafeId } from "@/api/lib/branded-types";
-import type { CaseLawPublicReadDb } from "@/api/lib/case-law-public-read-db";
+} from "@/api/lib/legal-search/corpus-storage";
+import type { EmptyAst } from "@/api/lib/legal-search/document-types";
 import { LIMITS } from "@/api/lib/limits";
 
 type PublicDecisionLanguageAlternate = {
@@ -145,6 +145,7 @@ export const readDecisionHandler = async (
         astS3Key: true,
         textS3Key: true,
         contentHash: true,
+        redactedAt: true,
         // fulltext: only as fallback when no AST
         // sections: frontend doesn't use these
       },
@@ -257,29 +258,32 @@ export const readDecisionHandler = async (
   // re-entering the fetch path on every view would cost a claim that can
   // never succeed. Kept as derived booleans rather than a call so this
   // module stays a read.
-  const { documentPending, documentUnavailable } = await resolveDocumentState({
-    hasReadableDocument: hasUsableAst(documentAst) || Boolean(fulltext),
-    documentUrl: decision.documentUrl,
-    corpusServed:
-      corpusReadEnabled() &&
-      decision.textS3Key !== null &&
-      decision.contentHash !== null,
-    contentHash: decision.contentHash,
-    pgAstPresent: decision.documentAst !== null,
-    resolvedFulltext: fulltext,
-    readTextColumnWritten: async () => {
-      const [row] = await caseLawDb((tx) =>
-        tx
-          .select({
-            written: sql<boolean>`${caseLawDecisions.fulltext} IS NOT NULL`,
-          })
-          .from(caseLawDecisions)
-          .where(eq(caseLawDecisions.id, decisionId))
-          .limit(1),
-      );
-      return row?.written ?? null;
-    },
-  });
+  const { documentPending, documentUnavailable } =
+    decision.redactedAt === null
+      ? await resolveDocumentState({
+          hasReadableDocument: hasUsableAst(documentAst) || Boolean(fulltext),
+          documentUrl: decision.documentUrl,
+          corpusServed:
+            corpusReadEnabled() &&
+            decision.textS3Key !== null &&
+            decision.contentHash !== null,
+          contentHash: decision.contentHash,
+          pgAstPresent: decision.documentAst !== null,
+          resolvedFulltext: fulltext,
+          readTextColumnWritten: async () => {
+            const [row] = await caseLawDb((tx) =>
+              tx
+                .select({
+                  written: sql<boolean>`${caseLawDecisions.fulltext} IS NOT NULL`,
+                })
+                .from(caseLawDecisions)
+                .where(eq(caseLawDecisions.id, decisionId))
+                .limit(1),
+            );
+            return row?.written ?? null;
+          },
+        })
+      : { documentPending: false, documentUnavailable: false };
 
   return {
     documentPending,

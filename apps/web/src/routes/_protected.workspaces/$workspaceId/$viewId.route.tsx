@@ -10,6 +10,12 @@ import * as v from "valibot";
 import { Skeleton } from "@stll/ui/components/skeleton";
 import { cn } from "@stll/ui/lib/utils";
 
+import {
+  getWeekStart,
+  isWorkspaceDocumentRoutePath,
+  resolveKanbanGroupBy,
+  toISODate,
+} from "@/components/workspaces/entity-utils";
 import { getFormattingLocale } from "@/i18n/i18n-store";
 import { getAnalytics } from "@/lib/analytics/provider";
 import { TOOLBAR_ROW_HEIGHT } from "@/lib/consts";
@@ -21,25 +27,19 @@ import {
 } from "@/lib/react-query";
 import { optionalSearchStringSchema } from "@/lib/schema";
 import type { ViewLayout, WorkspaceView } from "@/lib/types";
-import { ViewSwitcher } from "@/routes/_protected.workspaces/$workspaceId/-components/view/view-switcher";
-import { ViewToolbar } from "@/routes/_protected.workspaces/$workspaceId/-components/view/view-toolbar";
+import { overviewOptions } from "@/lib/workspaces/queries";
 import {
   DEFAULT_ENTITY_WINDOW_SIZE,
   entitiesWindowOptions,
   filesystemEntitiesOptions,
   visibleEntityFieldIds,
-} from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import { propertiesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
-import { timeEntriesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/time-entries";
-import { viewsOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/views";
-import { workspaceMembersOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/workspace-members";
-import {
-  getWeekStart,
-  isWorkspaceDocumentRoutePath,
-  resolveKanbanGroupBy,
-  toISODate,
-} from "@/routes/_protected.workspaces/$workspaceId/-utils";
-import { overviewOptions } from "@/routes/_protected.workspaces/-queries";
+} from "@/lib/workspaces/queries/entities";
+import { propertiesOptions } from "@/lib/workspaces/queries/properties";
+import { timeEntriesOptions } from "@/lib/workspaces/queries/time-entries";
+import { viewsOptions } from "@/lib/workspaces/queries/views";
+import { workspaceMembersOptions } from "@/lib/workspaces/queries/workspace-members";
+import { ViewSwitcher } from "@/routes/_protected.workspaces/$workspaceId/-components/view/view-switcher";
+import { ViewToolbar } from "@/routes/_protected.workspaces/$workspaceId/-components/view/view-toolbar";
 
 // v.object: validateSearch receives the full URL search params
 // including params from child routes; strictObject would reject them.

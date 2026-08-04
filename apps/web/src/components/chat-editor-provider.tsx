@@ -11,6 +11,7 @@ import type React from "react";
 
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryKey } from "@tanstack/react-query";
+import Bold from "@tiptap/extension-bold";
 import HardBreak from "@tiptap/extension-hard-break";
 import History from "@tiptap/extension-history";
 import Paragraph from "@tiptap/extension-paragraph";
@@ -25,6 +26,7 @@ import { useTranslations } from "use-intl";
 
 import { CHAT_CONTEXT_FILE_MAX_BYTES } from "@stll/chat-limits";
 
+import { createChatComposerDocument } from "@/components/chat-editor-markdown.logic";
 import {
   buildChatSlashItems,
   commandShortcutRowsFromSkillPages,
@@ -68,10 +70,10 @@ import {
 import type { ChatThreadRef } from "@/lib/chat-thread-ref";
 import { getChatThreadKey } from "@/lib/chat-thread-ref";
 import { detached } from "@/lib/detached";
+import { skillsOptions } from "@/lib/knowledge/queries";
 import type { WorkspaceEntity } from "@/lib/types";
-import { skillsOptions } from "@/routes/_protected.knowledge/-queries";
-import { entitiesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import { viewsOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/views";
+import { entitiesOptions } from "@/lib/workspaces/queries/entities";
+import { viewsOptions } from "@/lib/workspaces/queries/views";
 
 const CHAT_FILES_PER_MESSAGE = 5;
 const CHAT_MAX_FILE_BYTES = CHAT_CONTEXT_FILE_MAX_BYTES;
@@ -188,9 +190,8 @@ export type ChatEditorController = {
    */
   placeholder: string;
   removeFile: (id: string) => void;
-  setContent: (
-    content: Parameters<Editor["commands"]["setContent"]>[0],
-  ) => void;
+  /** Replace the prompt with plain text or inline Markdown source. */
+  setContent: (content: string) => void;
   setEditable: (editable: boolean) => void;
   setSubmitHandler: (handler: (() => Promise<void>) | null) => void;
   submit: (
@@ -515,7 +516,7 @@ export const useChatComposerWiring = ({
     if (submitDisabled) {
       return;
     }
-    if (onSubmitGuard && onSubmitGuard() === false) {
+    if (onSubmitGuard?.() === false) {
       return;
     }
     try {
@@ -971,6 +972,7 @@ export const useChatEditor = ({
       createPromptEditorDocument(),
       Paragraph,
       Text,
+      Bold,
       // Shift+Enter inserts a hard break (newline) instead of
       // splitting the paragraph; matches expected chat-input
       // behaviour everywhere — Slack, Discord, ChatGPT, etc.
@@ -1084,9 +1086,11 @@ export const useChatEditor = ({
         ) {
           const suggestion = suggestedFollowupPromptRef.current;
           const targetEditor = editorRef.current;
-          if (suggestion && targetEditor && targetEditor.isEmpty) {
+          if (suggestion && targetEditor?.isEmpty) {
             event.preventDefault();
-            targetEditor.commands.setContent(suggestion);
+            targetEditor.commands.setContent(
+              createChatComposerDocument(suggestion),
+            );
             return true;
           }
         }
@@ -1208,11 +1212,11 @@ export const useChatEditor = ({
   );
 
   const setContent = useCallback(
-    (content: Parameters<Editor["commands"]["setContent"]>[0]) => {
+    (content: string) => {
       if (!isUsableEditor(editor)) {
         return;
       }
-      editor.commands.setContent(content);
+      editor.commands.setContent(createChatComposerDocument(content));
     },
     [editor],
   );

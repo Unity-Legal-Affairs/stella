@@ -21,20 +21,20 @@ import {
 } from "@stll/ui/components/menu";
 import { stellaToast } from "@stll/ui/components/toast";
 
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
+import { useEntitiesCountLimit } from "@/components/workspaces/hooks/use-limits";
 import { StyleSetPickerDialog } from "@/features/style-sets/style-set-picker-dialog";
 import type { StyleSelection } from "@/features/style-sets/style-set-picker-dialog";
 import { usePermissions } from "@/hooks/use-permissions";
 import { api } from "@/lib/api";
 import { DOCX_MIME } from "@/lib/consts";
 import { toSafeId } from "@/lib/safe-id";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
+import { useCreateEntities } from "@/lib/workspaces/mutations/entities";
+import { entitiesKeys } from "@/lib/workspaces/queries/entities";
+import { propertiesOptions } from "@/lib/workspaces/queries/properties";
+import { useIsWorkflowRunning } from "@/lib/workspaces/queries/workspace";
 import { NewDocumentFromTemplateDialog } from "@/routes/_protected.workspaces/$workspaceId/-components/new-document-from-template-dialog";
 import { useCreateFileEntities } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-create-file-entities";
-import { useEntitiesCountLimit } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-limits";
-import { useCreateEntities } from "@/routes/_protected.workspaces/$workspaceId/-mutations/entities";
-import { entitiesKeys } from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import { propertiesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
-import { useIsWorkflowRunning } from "@/routes/_protected.workspaces/$workspaceId/-queries/workspace";
 
 type VirtualAnchor = {
   getBoundingClientRect: () => DOMRect;
@@ -150,7 +150,7 @@ export const AddEntityMenu = ({
       title: t("success.taskCreated"),
       type: "success",
     });
-    useInspectorStore
+    useInspectorTabsStore
       .getState()
       .openTask({ taskId: entityId, workspaceId, isNew: true });
   };
@@ -191,7 +191,7 @@ export const AddEntityMenu = ({
     await queryClient.invalidateQueries({
       queryKey: entitiesKeys.all(workspaceId),
     });
-    useInspectorStore.getState().openFile({
+    useInspectorTabsStore.getState().openFile({
       id: response.data.fieldId,
       entityId: response.data.entityId,
       label: response.data.fileName,

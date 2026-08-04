@@ -1,7 +1,7 @@
 import { useRef } from "react";
 
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
-import { useInspectorStore } from "@/routes/_protected.workspaces/$workspaceId/-components/inspector/inspector-store";
 
 /**
  * Flashes an element when the inspector activates the given entity.
@@ -14,7 +14,7 @@ export const useInspectorFlash = (
   ref: React.RefObject<HTMLElement | null>,
   { enabled = true }: { enabled?: boolean } = {},
 ) => {
-  const isActive = useInspectorStore((s) => {
+  const isActive = useInspectorTabsStore((s) => {
     if (!s.activeId) {
       return false;
     }
@@ -24,7 +24,7 @@ export const useInspectorFlash = (
     }
     return tab.type === "pdf" ? tab.entityId === entityId : tab.id === entityId;
   });
-  const seq = useInspectorStore((s) => s.activationSeq);
+  const seq = useInspectorTabsStore((s) => s.activationSeq);
   const prevSeq = useRef(seq);
 
   useExternalSyncEffect(() => {

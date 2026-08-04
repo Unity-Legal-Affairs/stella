@@ -56,6 +56,9 @@ export const CAPABILITY_DISPATCH = {
   "chat.delete-thread": {
     load: async () => await import("@/api/handlers/chat/delete-thread"),
   },
+  "chat.export.create": {
+    load: async () => await import("@/api/handlers/chat/export/create"),
+  },
   "chat.get-messages": {
     load: async () => await import("@/api/handlers/chat/get-messages"),
   },
@@ -222,6 +225,9 @@ export const CAPABILITY_DISPATCH = {
   "entities.move": {
     load: async () => await import("@/api/handlers/entities/move"),
   },
+  "entities.ocr.create": {
+    load: async () => await import("@/api/handlers/entities/ocr/create"),
+  },
   "entities.organize-suggestions": {
     load: async () =>
       await import("@/api/handlers/entities/organize-suggestions"),
@@ -374,6 +380,10 @@ export const CAPABILITY_DISPATCH = {
   "legislation.search": {
     load: async () => await import("@/api/handlers/legislation/search"),
   },
+  "organization-settings.document-ocr-availability.get": {
+    load: async () =>
+      await import("@/api/handlers/organization-settings/document-ocr-availability/get"),
+  },
   "organization-settings.get": {
     load: async () => await import("@/api/handlers/organization-settings/get"),
   },
@@ -511,6 +521,9 @@ export const CAPABILITY_DISPATCH = {
   "skills.delete": {
     load: async () => await import("@/api/handlers/skills/delete"),
   },
+  "skills.discover": {
+    load: async () => await import("@/api/handlers/skills/discover"),
+  },
   "skills.from-blueprint": {
     load: async () => await import("@/api/handlers/skills/from-blueprint"),
   },
@@ -518,6 +531,9 @@ export const CAPABILITY_DISPATCH = {
     load: async () => await import("@/api/handlers/skills/generate-draft"),
   },
   "skills.get": { load: async () => await import("@/api/handlers/skills/get") },
+  "skills.import": {
+    load: async () => await import("@/api/handlers/skills/import"),
+  },
   "skills.import-url": {
     load: async () => await import("@/api/handlers/skills/import-url"),
   },

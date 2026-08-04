@@ -602,6 +602,13 @@ const parseItemWithDetail = async (
   const rawPayload = JSON.stringify({ dumpItem, detail });
   const rawHash = hashContent(JSON.stringify(dumpItem));
 
+  const publisherCitedCases = normalizeOptionalArray(
+    item.referencedCourtCases,
+    dumpItem.referencedCourtCases,
+  )
+    .map((referenced) => referenced.caseNumber?.trim() ?? "")
+    .filter((caseNo) => caseNo.length > 0);
+
   return {
     caseNumber,
     ecli,
@@ -611,8 +618,10 @@ const parseItemWithDetail = async (
     decisionDate,
     decisionType,
     fulltext,
+    sourceDocumentId: String(item.id ?? dumpItem.id),
     sourceUrl: publicSourceUrl(item.id ?? dumpItem.id),
     documentUrl,
+    publisherCitedCases,
     metadata: {
       caseNumber,
       court: courtName,

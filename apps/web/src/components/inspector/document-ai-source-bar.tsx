@@ -1,6 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { panic, Result } from "better-result";
 import {
   ChevronLeftIcon,
@@ -13,11 +13,13 @@ import { Button } from "@stll/ui/components/button";
 import { DirectionalIcon } from "@stll/ui/components/directional-icon";
 import { cn } from "@stll/ui/lib/utils";
 
-import { useInspectorStore } from "@/components/inspector/inspector-store";
-import type { FileTab } from "@/components/inspector/inspector-store";
+import { useInspectorCommandStore } from "@/components/inspector/inspector-command-store";
+import { useInspectorTabsStore } from "@/components/inspector/inspector-tabs-store";
+import type { FileTab } from "@/components/inspector/inspector-tabs-store";
+import { useSyncJustifications } from "@/components/workspaces/hooks/use-sync-justifications";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { useFormatter } from "@/i18n/formatting-context";
-import { useAnalytics } from "@/lib/analytics/provider";
+import { getAnalytics } from "@/lib/analytics/provider";
 import { api } from "@/lib/api";
 import type { Citation } from "@/lib/citations";
 import { iterateJustificationCitations } from "@/lib/citations";
@@ -27,14 +29,13 @@ import { useOptionalPDFStore } from "@/lib/pdf/pdf-context";
 import { getPDFPageIdByNumber } from "@/lib/pdf/utils";
 import { renderJustificationContent } from "@/lib/render-justification-content";
 import { toSafeId } from "@/lib/safe-id";
-import { useSyncJustifications } from "@/routes/_protected.workspaces/$workspaceId/-hooks/use-sync-justifications";
-import { entityOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import { propertiesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
-import { workspaceKeys } from "@/routes/_protected.workspaces/$workspaceId/-queries/workspace";
+import { entityOptions } from "@/lib/workspaces/queries/entities";
+import { propertiesOptions } from "@/lib/workspaces/queries/properties";
+import { workspaceKeys } from "@/lib/workspaces/queries/workspace";
 import {
   selectJustificationByFieldId,
   useWorkspaceStore,
-} from "@/routes/_protected.workspaces/$workspaceId/-store";
+} from "@/lib/workspaces/store";
 
 const BBOX_POLL_INTERVAL_MS = 1000;
 
@@ -51,7 +52,7 @@ export const DocumentAiSourceBar = ({
 }) => {
   const t = useTranslations();
   const format = useFormatter();
-  const openFile = useInspectorStore((s) => s.openFile);
+  const openFile = useInspectorTabsStore((s) => s.openFile);
 
   const propertiesQuery = useQuery(propertiesOptions(workspaceId));
   const properties = propertiesQuery.data;
@@ -91,12 +92,12 @@ export const DocumentAiSourceBar = ({
   const setActiveJustification = useWorkspaceStore(
     (s) => s.setActiveJustification,
   );
-  const requestBlockScroll = useInspectorStore((s) => s.requestBlockScroll);
+  const requestBlockScroll = useInspectorCommandStore(
+    (s) => s.requestBlockScroll,
+  );
   const [isAnswerExpanded, setIsAnswerExpanded] = useState(false);
 
   // Eagerly generate bboxes when the justification bar mounts.
-  const queryClient = useQueryClient();
-  const analytics = useAnalytics();
   const setScrollTo = useOptionalPDFStore((s) => s.setScrollTo);
   const pages = useOptionalPDFStore((s) => s.pages);
   const justificationId = justification?.id;
@@ -129,14 +130,13 @@ export const DocumentAiSourceBar = ({
   const shouldGenerateBoxes = Boolean(
     justificationId && isActiveTab && hasBoundingBoxCitations && !boundingBoxes,
   );
-  // oxlint-disable-next-line @tanstack/query/exhaustive-deps -- queryClient and analytics are stable runtime services, not request/cache identity
   const generateBoundingBoxes = useQuery({
     queryKey: [
       ...workspaceKeys.justifications(workspaceId),
       "generate-bounding-boxes",
       justificationId,
     ],
-    queryFn: async ({ signal }) => {
+    queryFn: async ({ client, signal }) => {
       // `enabled` gates this query on `justificationId !== undefined`, so an
       // undefined id here is an impossible invariant, not a runtime state.
       if (justificationId === undefined) {
@@ -155,13 +155,13 @@ export const DocumentAiSourceBar = ({
         if (response.error) {
           throw toAPIError(response.error);
         }
-        await queryClient.invalidateQueries({
+        await client.invalidateQueries({
           queryKey: workspaceKeys.justifications(workspaceId),
         });
         return response.data;
       });
       if (Result.isError(result)) {
-        analytics.captureError(result.error);
+        getAnalytics().captureError(result.error);
         throw result.error;
       }
       return result.value;
@@ -187,15 +187,14 @@ export const DocumentAiSourceBar = ({
     setIsAnswerExpanded(false);
   }
 
-  // oxlint-disable-next-line @tanstack/query/exhaustive-deps -- queryClient is a stable runtime service, not polling cache identity
   useQuery({
     queryKey: [
       ...workspaceKeys.justifications(workspaceId),
       "bounding-box-poll",
       justificationId,
     ],
-    queryFn: async () => {
-      await queryClient.invalidateQueries({
+    queryFn: async ({ client }) => {
+      await client.invalidateQueries({
         queryKey: workspaceKeys.justifications(workspaceId),
       });
       return true;
@@ -390,7 +389,7 @@ export const DocumentAiSourceBar = ({
           the overlay and re-runs the keyframe. */}
       <div
         aria-hidden
-        className="bg-primary/12 animate-source-bar-flash pointer-events-none absolute inset-0 opacity-0"
+        className="bg-primary/12 animate-attention-flash pointer-events-none absolute inset-0 opacity-0"
         key={justificationId}
       />
       <div

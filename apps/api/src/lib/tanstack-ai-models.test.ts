@@ -6,7 +6,7 @@ import {
   CHAT_PDF_ATTACHMENT_MODEL_OPTIONS,
   getModelReasoningEfforts,
   MODEL_ROLES,
-  supportsTemperature,
+  shouldEmitTemperature,
   TANSTACK_AI_PROVIDERS,
 } from "@stll/ai-catalog";
 
@@ -14,6 +14,7 @@ import { env } from "@/api/env";
 import type { OrgAIConfig } from "@/api/lib/ai-config";
 import { toSafeId } from "@/api/lib/branded-types";
 import { HandlerError } from "@/api/lib/errors/tagged-errors";
+import { StellaOpenRouterTextAdapter } from "@/api/lib/stella-openrouter-text-adapter";
 import type { TanStackModelOptions } from "@/api/lib/tanstack-ai-models";
 
 process.env["EMAIL_PROVIDER"] ??= "smtp";
@@ -416,6 +417,7 @@ describe("TanStack text model resolution", () => {
     });
     expect(model.adapter.name).toBe("openrouter");
     expect(model.adapter.model).toBe("google/gemini-3.5-flash");
+    expect(model.adapter).toBeInstanceOf(StellaOpenRouterTextAdapter);
   });
 
   test("resolves Mistral BYOK selections through the TanStack adapter", () => {
@@ -612,6 +614,31 @@ describe("tanStackModelOptionsForRole", () => {
     ).toEqual({ temperature: 0 });
   });
 
+  test("omits deprecated Gemini sampling parameters across provider paths", () => {
+    for (const candidate of [
+      { provider: "google" as const, modelId: "gemini-3.6-flash" },
+      {
+        provider: "openrouter" as const,
+        modelId: "google/gemini-3.6-flash",
+      },
+      { provider: "google" as const, modelId: "gemini-3.5-flash-lite" },
+      {
+        provider: "openrouter" as const,
+        modelId: "google/gemini-3.5-flash-lite",
+      },
+    ]) {
+      const options = tanStackModelOptionsForRole({
+        role: "chat",
+        organizationId: null,
+        ...candidate,
+      });
+      expect(
+        options,
+        `${candidate.provider}/${candidate.modelId}`,
+      ).not.toHaveProperty("temperature");
+    }
+  });
+
   test("clamps the fast-role effort into the model's declared capability", () => {
     // gemini-3.5-flash cannot disable reasoning ("Reasoning is
     // mandatory" 502 class): the fast role's "none" request must
@@ -693,7 +720,7 @@ describe("tanStackModelOptionsForRole", () => {
           }
 
           if (options.temperature !== undefined) {
-            expect(supportsTemperature(modelId), context).toBe(true);
+            expect(shouldEmitTemperature(modelId), context).toBe(true);
           }
         }
       }

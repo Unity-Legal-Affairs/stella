@@ -3,9 +3,9 @@ import { t } from "elysia";
 
 import { compileLegalSourceToDocx } from "@stll/docx-core";
 
-import { createChatRefRegistry } from "@/api/handlers/chat/tools/execute/ref-registry";
-import { createEntityFromBuffer } from "@/api/handlers/entities/create-from-buffer";
 import { createSafeHandler } from "@/api/lib/api-handlers";
+import { createChatRefRegistry } from "@/api/lib/chat/ref-registry";
+import { createEntityFromBuffer } from "@/api/lib/entities/create-from-buffer";
 import { HandlerError, unreachable } from "@/api/lib/errors/tagged-errors";
 import { sanitizeFilenamePreservingExtension } from "@/api/lib/sanitize-filename";
 import { DOCX_MIME_TYPE } from "@/api/mime-types";
@@ -100,11 +100,19 @@ export default createSafeHandler(
 
 const toHandlerError = (
   error:
+    | { _tag: "DocumentTooLargeError" }
     | { _tag: "EntityLimitError" }
     | { _tag: "InvalidParentError" }
     | { _tag: "MissingFilePropertyError" },
 ): HandlerError => {
   switch (error._tag) {
+    case "DocumentTooLargeError":
+      return new HandlerError({
+        code: "legal_source_document_too_large",
+        status: 413,
+        message:
+          "The generated document exceeds the document size limit, so it could not be created.",
+      });
     case "EntityLimitError":
       return new HandlerError({
         code: "legal_source_entity_limit_reached",

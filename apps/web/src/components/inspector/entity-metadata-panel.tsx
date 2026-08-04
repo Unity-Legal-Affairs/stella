@@ -20,6 +20,9 @@ import { cn } from "@stll/ui/lib/utils";
 import { MetadataPanelSkeleton } from "@/components/inspector/file-facets";
 import { QuerySuspenseBoundary } from "@/components/query-suspense-boundary";
 import Tooltip from "@/components/tooltip";
+import { CreateProperty } from "@/components/workspaces/create-property";
+import { EditableField } from "@/components/workspaces/editable-field";
+import { Justification } from "@/components/workspaces/justification";
 import { useExternalSyncEffect } from "@/hooks/use-effect";
 import { TOOLBAR_ROW_HEIGHT } from "@/lib/consts";
 import { detached } from "@/lib/detached";
@@ -31,20 +34,14 @@ import type {
   PropertyId,
   WorkspaceProperty,
 } from "@/lib/types";
-import { CreateProperty } from "@/routes/_protected.workspaces/$workspaceId/-components/create-property";
-import { EditableField } from "@/routes/_protected.workspaces/$workspaceId/-components/editable-field";
-import { Justification } from "@/routes/_protected.workspaces/$workspaceId/-components/justification";
-import {
-  entitiesKeys,
-  entityOptions,
-} from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import { entityVersionsOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/entity-versions";
-import { propertiesOptions } from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
-import { useIsWorkflowRunning } from "@/routes/_protected.workspaces/$workspaceId/-queries/workspace";
+import { entitiesKeys, entityOptions } from "@/lib/workspaces/queries/entities";
+import { entityVersionsOptions } from "@/lib/workspaces/queries/entity-versions";
+import { propertiesOptions } from "@/lib/workspaces/queries/properties";
+import { useIsWorkflowRunning } from "@/lib/workspaces/queries/workspace";
 import {
   selectJustificationByFieldId,
   useWorkspaceStore,
-} from "@/routes/_protected.workspaces/$workspaceId/-store";
+} from "@/lib/workspaces/store";
 
 type AiFieldClickArgs = {
   fieldId: string;

@@ -114,7 +114,6 @@
       "GET /health",
       "GET /v1/chat/threads",
       "GET /v1/chat/threads/:id/messages",
-      "GET /v1/chat/threads/:id/title",
       "GET /v1/mcp/connectors",
       "GET /v1/organization-settings/ai-availability",
       "GET /v1/skills",
@@ -128,7 +127,6 @@
       "GET /health": 1,
       "GET /v1/chat/threads": 1,
       "GET /v1/chat/threads/:id/messages": 1,
-      "GET /v1/chat/threads/:id/title": 2,
       "GET /v1/mcp/connectors": 1,
       "GET /v1/organization-settings/ai-availability": 1,
       "GET /v1/skills": 1,
@@ -142,7 +140,6 @@
       "GET /health": 0,
       "GET /v1/chat/threads": 6,
       "GET /v1/chat/threads/:id/messages": 7,
-      "GET /v1/chat/threads/:id/title": 6,
       "GET /v1/mcp/connectors": 8,
       "GET /v1/organization-settings/ai-availability": 4,
       "GET /v1/skills": 6,
@@ -156,7 +153,6 @@
       "GET /health": 1024,
       "GET /v1/chat/threads": 4096,
       "GET /v1/chat/threads/:id/messages": 1024,
-      "GET /v1/chat/threads/:id/title": 1024,
       "GET /v1/mcp/connectors": 5120,
       "GET /v1/organization-settings/ai-availability": 1024,
       "GET /v1/skills": 4096,
@@ -240,7 +236,6 @@
       "GET /health",
       "GET /v1/chat/threads",
       "GET /v1/chat/threads/:id/messages",
-      "GET /v1/chat/threads/:id/title",
       "GET /v1/mcp/connectors",
       "GET /v1/organization-settings/ai-availability",
       "GET /v1/skills",
@@ -256,7 +251,6 @@
       "GET /health": 1,
       "GET /v1/chat/threads": 1,
       "GET /v1/chat/threads/:id/messages": 1,
-      "GET /v1/chat/threads/:id/title": 2,
       "GET /v1/mcp/connectors": 1,
       "GET /v1/organization-settings/ai-availability": 1,
       "GET /v1/skills": 1,
@@ -272,7 +266,6 @@
       "GET /health": 0,
       "GET /v1/chat/threads": 6,
       "GET /v1/chat/threads/:id/messages": 7,
-      "GET /v1/chat/threads/:id/title": 6,
       "GET /v1/mcp/connectors": 8,
       "GET /v1/organization-settings/ai-availability": 4,
       "GET /v1/skills": 6,
@@ -288,7 +281,6 @@
       "GET /health": 1024,
       "GET /v1/chat/threads": 4096,
       "GET /v1/chat/threads/:id/messages": 1024,
-      "GET /v1/chat/threads/:id/title": 1024,
       "GET /v1/mcp/connectors": 5120,
       "GET /v1/organization-settings/ai-availability": 1024,
       "GET /v1/skills": 4096,
@@ -400,7 +392,9 @@
       "GET /api/auth/organization/list",
       "GET /health",
       "GET /v1/chat/threads",
+      "GET /v1/chat/threads/:id/messages",
       "GET /v1/organization-settings/ai-availability",
+      "GET /v1/skills",
       "GET /v1/workspaces/navigation"
     ],
     "requestCounts": {
@@ -409,7 +403,9 @@
       "GET /api/auth/organization/list": 1,
       "GET /health": 1,
       "GET /v1/chat/threads": 1,
+      "GET /v1/chat/threads/:id/messages": 1,
       "GET /v1/organization-settings/ai-availability": 1,
+      "GET /v1/skills": 1,
       "GET /v1/workspaces/navigation": 1
     },
     "dbQueries": {
@@ -418,7 +414,9 @@
       "GET /api/auth/organization/list": 6,
       "GET /health": 1,
       "GET /v1/chat/threads": 6,
+      "GET /v1/chat/threads/:id/messages": 7,
       "GET /v1/organization-settings/ai-availability": 4,
+      "GET /v1/skills": 6,
       "GET /v1/workspaces/navigation": 6
     },
     "responseSizes": {
@@ -427,7 +425,9 @@
       "GET /api/auth/organization/list": 1024,
       "GET /health": 1024,
       "GET /v1/chat/threads": 4096,
+      "GET /v1/chat/threads/:id/messages": 1024,
       "GET /v1/organization-settings/ai-availability": 1024,
+      "GET /v1/skills": 4096,
       "GET /v1/workspaces/navigation": 20480
     }
   },
@@ -553,7 +553,7 @@
       "GET /v1/organization-settings": 6,
       "GET /v1/organization-settings/ai-availability": 4,
       "GET /v1/workspaces/navigation": 6,
-      "POST /v1/skills/seed": 6
+      "POST /v1/skills/seed": 9
     },
     "responseSizes": {
       "GET /api/auth/get-session": 1024,
@@ -647,7 +647,7 @@
       "GET /v1/organization-settings": 6,
       "GET /v1/organization-settings/ai-availability": 4,
       "GET /v1/workspaces/navigation": 6,
-      "POST /v1/skills/seed": 6
+      "POST /v1/skills/seed": 9
     },
     "responseSizes": {
       "GET /api/auth/get-session": 1024,
@@ -698,7 +698,7 @@
       "GET /v1/organization-settings": 6,
       "GET /v1/organization-settings/ai-availability": 4,
       "GET /v1/workspaces/navigation": 6,
-      "POST /v1/skills/seed": 6
+      "POST /v1/skills/seed": 9
     },
     "responseSizes": {
       "GET /api/auth/get-session": 1024,
@@ -839,7 +839,7 @@
       "GET /v1/organization-settings": 6,
       "GET /v1/organization-settings/ai-availability": 4,
       "GET /v1/workspaces/navigation": 6,
-      "POST /v1/skills/seed": 6
+      "POST /v1/skills/seed": 9
     },
     "responseSizes": {
       "GET /api/auth/get-session": 1024,
@@ -944,6 +944,7 @@
     "depth": 3,
     "requests": [
       "GET /api/auth/get-session",
+      "GET /api/auth/list-sessions",
       "GET /api/auth/organization/get-active-member-role",
       "GET /api/auth/organization/list",
       "GET /health",
@@ -953,6 +954,7 @@
     ],
     "requestCounts": {
       "GET /api/auth/get-session": 1,
+      "GET /api/auth/list-sessions": 1,
       "GET /api/auth/organization/get-active-member-role": 1,
       "GET /api/auth/organization/list": 1,
       "GET /health": 1,
@@ -962,6 +964,7 @@
     },
     "dbQueries": {
       "GET /api/auth/get-session": 2,
+      "GET /api/auth/list-sessions": 3,
       "GET /api/auth/organization/get-active-member-role": 4,
       "GET /api/auth/organization/list": 6,
       "GET /health": 1,
@@ -971,6 +974,7 @@
     },
     "responseSizes": {
       "GET /api/auth/get-session": 1024,
+      "GET /api/auth/list-sessions": 3072,
       "GET /api/auth/organization/get-active-member-role": 1024,
       "GET /api/auth/organization/list": 1024,
       "GET /health": 1024,
@@ -1328,7 +1332,7 @@
       "GET /v1/organization-settings": 6,
       "GET /v1/organization-settings/ai-availability": 4,
       "GET /v1/workspaces/navigation": 6,
-      "POST /v1/skills/seed": 6
+      "POST /v1/skills/seed": 9
     },
     "responseSizes": {
       "GET /api/auth/get-session": 1024,
@@ -1632,6 +1636,7 @@
       "GET /v1/workspaces/:id/events",
       "GET /v1/workspaces/:id/members",
       "GET /v1/workspaces/:id/overview",
+      "GET /v1/workspaces/:id/overview/activity",
       "GET /v1/workspaces/:id/workflow",
       "GET /v1/workspaces/navigation"
     ],
@@ -1652,6 +1657,7 @@
       "GET /v1/workspaces/:id/events": 1,
       "GET /v1/workspaces/:id/members": 1,
       "GET /v1/workspaces/:id/overview": 1,
+      "GET /v1/workspaces/:id/overview/activity": 1,
       "GET /v1/workspaces/:id/workflow": 1,
       "GET /v1/workspaces/navigation": 1
     },
@@ -1672,6 +1678,7 @@
       "GET /v1/workspaces/:id/events": 4,
       "GET /v1/workspaces/:id/members": 6,
       "GET /v1/workspaces/:id/overview": 7,
+      "GET /v1/workspaces/:id/overview/activity": 8,
       "GET /v1/workspaces/:id/workflow": 4,
       "GET /v1/workspaces/navigation": 6
     },
@@ -1691,6 +1698,7 @@
       "GET /v1/workspaces/:id/activity": 1024,
       "GET /v1/workspaces/:id/members": 1024,
       "GET /v1/workspaces/:id/overview": 1024,
+      "GET /v1/workspaces/:id/overview/activity": 2048,
       "GET /v1/workspaces/:id/workflow": 1024,
       "GET /v1/workspaces/navigation": 20480
     }
@@ -1714,6 +1722,7 @@
       "GET /v1/workspaces/:id/events",
       "GET /v1/workspaces/:id/members",
       "GET /v1/workspaces/:id/overview",
+      "GET /v1/workspaces/:id/overview/activity",
       "GET /v1/workspaces/:id/workflow",
       "GET /v1/workspaces/navigation"
     ],
@@ -1734,6 +1743,7 @@
       "GET /v1/workspaces/:id/events": 1,
       "GET /v1/workspaces/:id/members": 1,
       "GET /v1/workspaces/:id/overview": 1,
+      "GET /v1/workspaces/:id/overview/activity": 1,
       "GET /v1/workspaces/:id/workflow": 1,
       "GET /v1/workspaces/navigation": 1
     },
@@ -1754,6 +1764,7 @@
       "GET /v1/workspaces/:id/events": 4,
       "GET /v1/workspaces/:id/members": 6,
       "GET /v1/workspaces/:id/overview": 7,
+      "GET /v1/workspaces/:id/overview/activity": 8,
       "GET /v1/workspaces/:id/workflow": 4,
       "GET /v1/workspaces/navigation": 6
     },
@@ -1773,6 +1784,7 @@
       "GET /v1/workspaces/:id/activity": 1024,
       "GET /v1/workspaces/:id/members": 1024,
       "GET /v1/workspaces/:id/overview": 1024,
+      "GET /v1/workspaces/:id/overview/activity": 2048,
       "GET /v1/workspaces/:id/workflow": 1024,
       "GET /v1/workspaces/navigation": 20480
     }
@@ -1854,115 +1866,6 @@
       "GET /v1/workspaces/:id/activity": 7,
       "GET /v1/workspaces/:id/anonymization-terms": 6,
       "GET /v1/workspaces/:id/events": 4,
-      "GET /v1/workspaces/:id/overview": 7,
-      "GET /v1/workspaces/:id/workflow": 4,
-      "GET /v1/workspaces/navigation": 6,
-      "POST /v1/chat/workspaces/:id/file-thread": 13,
-      "POST /v1/workspaces/:id/justifications/query": 6
-    },
-    "responseSizes": {
-      "GET /api/auth/get-session": 1024,
-      "GET /api/auth/organization/get-active-member-role": 1024,
-      "GET /api/auth/organization/list": 1024,
-      "GET /health": 1024,
-      "GET /v1/chat/threads": 4096,
-      "GET /v1/docx-suggestions/:id/entity/:id": 1024,
-      "GET /v1/entities/:id/entity/:id": 1024,
-      "GET /v1/entities/:id/entity/:id/versions": 1024,
-      "GET /v1/files/:id/url/:id": 1024,
-      "GET /v1/mcp/connectors": 5120,
-      "GET /v1/organization-settings": 1024,
-      "GET /v1/organization-settings/ai-availability": 1024,
-      "GET /v1/organization-settings/deepl": 1024,
-      "GET /v1/properties/:id": 1024,
-      "GET /v1/skills": 4096,
-      "GET /v1/views/:id": 1024,
-      "GET /v1/workspaces/:id": 6144,
-      "GET /v1/workspaces/:id/activity": 1024,
-      "GET /v1/workspaces/:id/anonymization-terms": 1024,
-      "GET /v1/workspaces/:id/overview": 1024,
-      "GET /v1/workspaces/:id/workflow": 1024,
-      "GET /v1/workspaces/navigation": 20480,
-      "POST /v1/chat/workspaces/:id/file-thread": 1024,
-      "POST /v1/workspaces/:id/justifications/query": 1024
-    }
-  },
-  "/workspaces/$workspaceId/entities/$entityId": {
-    "depth": 11,
-    "requests": [
-      "GET /api/auth/get-session",
-      "GET /api/auth/organization/get-active-member-role",
-      "GET /api/auth/organization/list",
-      "GET /health",
-      "GET /v1/chat/threads",
-      "GET /v1/docx-suggestions/:id/entity/:id",
-      "GET /v1/entities/:id/entity/:id",
-      "GET /v1/entities/:id/entity/:id/versions",
-      "GET /v1/files/:id/url/:id",
-      "GET /v1/mcp/connectors",
-      "GET /v1/organization-settings",
-      "GET /v1/organization-settings/ai-availability",
-      "GET /v1/organization-settings/deepl",
-      "GET /v1/properties/:id",
-      "GET /v1/skills",
-      "GET /v1/views/:id",
-      "GET /v1/workspaces/:id",
-      "GET /v1/workspaces/:id/activity",
-      "GET /v1/workspaces/:id/anonymization-terms",
-      "GET /v1/workspaces/:id/events",
-      "GET /v1/workspaces/:id/overview",
-      "GET /v1/workspaces/:id/workflow",
-      "GET /v1/workspaces/navigation",
-      "POST /v1/chat/workspaces/:id/file-thread",
-      "POST /v1/workspaces/:id/justifications/query"
-    ],
-    "requestCounts": {
-      "GET /api/auth/get-session": 1,
-      "GET /api/auth/organization/get-active-member-role": 1,
-      "GET /api/auth/organization/list": 1,
-      "GET /health": 1,
-      "GET /v1/chat/threads": 1,
-      "GET /v1/docx-suggestions/:id/entity/:id": 1,
-      "GET /v1/entities/:id/entity/:id": 1,
-      "GET /v1/entities/:id/entity/:id/versions": 1,
-      "GET /v1/files/:id/url/:id": 2,
-      "GET /v1/mcp/connectors": 1,
-      "GET /v1/organization-settings": 1,
-      "GET /v1/organization-settings/ai-availability": 1,
-      "GET /v1/organization-settings/deepl": 1,
-      "GET /v1/properties/:id": 1,
-      "GET /v1/skills": 1,
-      "GET /v1/views/:id": 1,
-      "GET /v1/workspaces/:id": 1,
-      "GET /v1/workspaces/:id/activity": 1,
-      "GET /v1/workspaces/:id/anonymization-terms": 1,
-      "GET /v1/workspaces/:id/events": 2,
-      "GET /v1/workspaces/:id/overview": 1,
-      "GET /v1/workspaces/:id/workflow": 1,
-      "GET /v1/workspaces/navigation": 1,
-      "POST /v1/chat/workspaces/:id/file-thread": 1,
-      "POST /v1/workspaces/:id/justifications/query": 1
-    },
-    "dbQueries": {
-      "GET /api/auth/get-session": 2,
-      "GET /api/auth/organization/get-active-member-role": 4,
-      "GET /api/auth/organization/list": 6,
-      "GET /health": 0,
-      "GET /v1/chat/threads": 6,
-      "GET /v1/docx-suggestions/:id/entity/:id": 6,
-      "GET /v1/entities/:id/entity/:id": 8,
-      "GET /v1/entities/:id/entity/:id/versions": 10,
-      "GET /v1/files/:id/url/:id": 6,
-      "GET /v1/mcp/connectors": 8,
-      "GET /v1/organization-settings": 6,
-      "GET /v1/organization-settings/ai-availability": 4,
-      "GET /v1/organization-settings/deepl": 6,
-      "GET /v1/properties/:id": 6,
-      "GET /v1/skills": 6,
-      "GET /v1/views/:id": 8,
-      "GET /v1/workspaces/:id": 6,
-      "GET /v1/workspaces/:id/activity": 7,
-      "GET /v1/workspaces/:id/anonymization-terms": 6,
       "GET /v1/workspaces/:id/overview": 7,
       "GET /v1/workspaces/:id/workflow": 4,
       "GET /v1/workspaces/navigation": 6,
@@ -2165,6 +2068,7 @@
       "GET /v1/workspaces/:id/events",
       "GET /v1/workspaces/:id/members",
       "GET /v1/workspaces/:id/overview",
+      "GET /v1/workspaces/:id/overview/activity",
       "GET /v1/workspaces/:id/workflow",
       "GET /v1/workspaces/navigation"
     ],
@@ -2185,6 +2089,7 @@
       "GET /v1/workspaces/:id/events": 1,
       "GET /v1/workspaces/:id/members": 1,
       "GET /v1/workspaces/:id/overview": 1,
+      "GET /v1/workspaces/:id/overview/activity": 1,
       "GET /v1/workspaces/:id/workflow": 1,
       "GET /v1/workspaces/navigation": 1
     },
@@ -2204,6 +2109,7 @@
       "GET /v1/workspaces/:id/activity": 7,
       "GET /v1/workspaces/:id/members": 6,
       "GET /v1/workspaces/:id/overview": 7,
+      "GET /v1/workspaces/:id/overview/activity": 8,
       "GET /v1/workspaces/:id/workflow": 4,
       "GET /v1/workspaces/navigation": 6
     },
@@ -2223,6 +2129,7 @@
       "GET /v1/workspaces/:id/activity": 1024,
       "GET /v1/workspaces/:id/members": 1024,
       "GET /v1/workspaces/:id/overview": 1024,
+      "GET /v1/workspaces/:id/overview/activity": 2048,
       "GET /v1/workspaces/:id/workflow": 1024,
       "GET /v1/workspaces/navigation": 20480
     }

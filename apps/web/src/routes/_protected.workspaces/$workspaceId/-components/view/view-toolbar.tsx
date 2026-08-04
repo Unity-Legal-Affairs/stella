@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
@@ -11,6 +11,7 @@ import {
   DownloadIcon,
   EyeIcon,
   HashIcon,
+  Loader2Icon,
   PlayIcon,
   Rows3Icon,
   SparklesIcon,
@@ -41,7 +42,14 @@ import {
 } from "@stll/ui/components/select";
 import { stellaToast } from "@stll/ui/components/toast";
 
+import { CsvIcon, DocxIcon, XlsxIcon } from "@/components/document-icon";
 import { FolderExpandToggle } from "@/components/file-tree/folder-expand-toggle";
+import {
+  getInternalPropertyId,
+  resolveKanbanGroupBy,
+} from "@/components/workspaces/entity-utils";
+import { PropertyIcon } from "@/components/workspaces/property-helpers";
+import { resolveDocumentTypeClassifier } from "@/components/workspaces/table/group-columns";
 import { usePlaybooksPreviewEnabled } from "@/hooks/use-playbooks-preview";
 import { useLocale } from "@/i18n/formatting-context";
 import type { TranslationKey } from "@/i18n/types";
@@ -54,6 +62,10 @@ import { toAPIError } from "@/lib/errors/api";
 import { ClientOperationError } from "@/lib/errors/client";
 import { userErrorMessage } from "@/lib/errors/user-safe";
 import { fetchWithTimeout } from "@/lib/fetch";
+import {
+  PLAYBOOK_PICKER_LIMIT,
+  playbooksOptions,
+} from "@/lib/knowledge/queries";
 import { toSafeId } from "@/lib/safe-id";
 import type {
   ViewLayout,
@@ -63,35 +75,25 @@ import type {
 } from "@/lib/types";
 import { downloadFile } from "@/lib/utils";
 import {
-  PLAYBOOK_PICKER_LIMIT,
-  playbooksOptions,
-} from "@/routes/_protected.knowledge/-queries";
+  workspaceFilesOptions,
+  workspaceFoldersOptions,
+} from "@/lib/workspaces/queries/entities";
+import {
+  propertiesKeys,
+  propertiesOptions,
+} from "@/lib/workspaces/queries/properties";
+import { useWorkspaceStore } from "@/lib/workspaces/store";
 import { BulkAddColumns } from "@/routes/_protected.workspaces/$workspaceId/-components/bulk-add-columns";
 import { ExistingFileOrganizerDialog } from "@/routes/_protected.workspaces/$workspaceId/-components/existing-file-organizer-dialog";
 import { ExtractionRunProgress } from "@/routes/_protected.workspaces/$workspaceId/-components/extraction-run-progress";
 import { isGroupableProperty } from "@/routes/_protected.workspaces/$workspaceId/-components/kanban/kanban-view.logic";
-import { PropertyIcon } from "@/routes/_protected.workspaces/$workspaceId/-components/property-helpers";
 import { RowActions } from "@/routes/_protected.workspaces/$workspaceId/-components/row-actions";
-import { resolveDocumentTypeClassifier } from "@/routes/_protected.workspaces/$workspaceId/-components/table/group-columns";
 import { ExportReportControl } from "@/routes/_protected.workspaces/$workspaceId/-components/view/export-report-dialog";
 import { FilterChips } from "@/routes/_protected.workspaces/$workspaceId/-components/view/view-toolbar-filters";
 import { SortChips } from "@/routes/_protected.workspaces/$workspaceId/-components/view/view-toolbar-sorts";
 import type { TableContentMode } from "@/routes/_protected.workspaces/$workspaceId/-hooks/table-store";
 import { useTableStore } from "@/routes/_protected.workspaces/$workspaceId/-hooks/table-store";
 import { useUpdateView } from "@/routes/_protected.workspaces/$workspaceId/-mutations/views";
-import {
-  workspaceFilesOptions,
-  workspaceFoldersOptions,
-} from "@/routes/_protected.workspaces/$workspaceId/-queries/entities";
-import {
-  propertiesKeys,
-  propertiesOptions,
-} from "@/routes/_protected.workspaces/$workspaceId/-queries/properties";
-import { useWorkspaceStore } from "@/routes/_protected.workspaces/$workspaceId/-store";
-import {
-  getInternalPropertyId,
-  resolveKanbanGroupBy,
-} from "@/routes/_protected.workspaces/$workspaceId/-utils";
 
 const protectedRouteApi = getRouteApi("/_protected");
 
@@ -286,8 +288,18 @@ const SelectionActions = ({
   }
 
   return (
-    <div className="ms-auto flex items-center gap-1.5">
-      <span className="text-muted-foreground text-xs">
+    <div className="relative ms-auto flex items-center gap-1.5">
+      {/* The bulk actions behind the "…" menu stay invisible until a
+          row is selected, so nothing signals that selecting rows
+          unlocked them. This group only mounts once something is
+          selected, which makes mount the 0 → 1 transition: a double
+          tint blink then points at the count and the menu exactly
+          once per selection, without any timer state. */}
+      <div
+        aria-hidden
+        className="bg-primary/12 animate-attention-flash-twice pointer-events-none absolute -inset-x-1.5 -inset-y-1 rounded-md opacity-0 motion-reduce:animate-none"
+      />
+      <span className="text-muted-foreground relative text-xs">
         {t("workspaces.views.fieldsSelected", {
           count: selectedEntities.length,
         })}
@@ -297,7 +309,7 @@ const SelectionActions = ({
         selectedEntities={
           selectedEntities.length > 1 ? selectedEntities : undefined
         }
-        triggerClassName=""
+        triggerClassName="relative"
         workspaceId={workspaceId}
       />
     </div>
@@ -346,6 +358,59 @@ const TableContentModeControl = ({ viewId }: TableContentModeControlProps) => {
 };
 
 type TableExportFormat = "csv" | "xlsx" | "docx";
+
+// One row per downloadable format, in menu order. `separatorBefore` splits the
+// spreadsheet formats from the document formats.
+const TABLE_EXPORT_FORMATS = [
+  {
+    format: "csv",
+    icon: CsvIcon,
+    labelKey: "workspaces.views.exportCsv",
+    separatorBefore: false,
+  },
+  {
+    format: "xlsx",
+    icon: XlsxIcon,
+    labelKey: "workspaces.views.exportXlsx",
+    separatorBefore: false,
+  },
+  {
+    format: "docx",
+    icon: DocxIcon,
+    labelKey: "workspaces.views.exportDocxPlain",
+    separatorBefore: true,
+  },
+] as const satisfies readonly {
+  format: TableExportFormat;
+  icon: ComponentType<{ className?: string }>;
+  labelKey: TranslationKey;
+  separatorBefore: boolean;
+}[];
+
+type ExportFormatIconProps = {
+  Icon: ComponentType<{ className?: string }>;
+  pending: boolean;
+};
+
+// The file-type icons carry their own colours, so `opacity-100` opts them out
+// of the menu's default icon dimming. The spinner is the only signal that an
+// export is running, so it is labelled rather than left aria-hidden.
+const ExportFormatIcon = ({ Icon, pending }: ExportFormatIconProps) => {
+  const t = useTranslations();
+
+  if (pending) {
+    return (
+      <Loader2Icon
+        aria-hidden={false}
+        aria-label={t("common.loading")}
+        className="text-muted-foreground size-4.5 animate-spin sm:size-4"
+        role="img"
+      />
+    );
+  }
+
+  return <Icon className="size-4.5 opacity-100 sm:size-4" />;
+};
 
 type TableExportMenuProps = {
   view: Pick<WorkspaceView, "id" | "name">;
@@ -410,6 +475,7 @@ const TableExportMenu = ({ view, workspaceId }: TableExportMenuProps) => {
         <MenuTrigger
           render={
             <Button
+              aria-busy={exportingFormat !== null}
               aria-label={t("workspaces.views.exportTable")}
               disabled={exportingFormat !== null}
               size="icon-xs"
@@ -418,35 +484,33 @@ const TableExportMenu = ({ view, workspaceId }: TableExportMenuProps) => {
             />
           }
         >
-          <DownloadIcon className="size-3.5" />
+          {exportingFormat === null ? (
+            <DownloadIcon className="size-3.5" />
+          ) : (
+            <Loader2Icon className="size-3.5 animate-spin" />
+          )}
         </MenuTrigger>
-        <MenuPopup>
-          <MenuItem
-            disabled={exportingFormat !== null}
-            onClick={() => {
-              detached(handleExport("csv"), "TableExportMenu");
-            }}
-          >
-            {t("workspaces.views.exportCsv")}
-          </MenuItem>
-          <MenuItem
-            disabled={exportingFormat !== null}
-            onClick={() => {
-              detached(handleExport("xlsx"), "TableExportMenu");
-            }}
-          >
-            {t("workspaces.views.exportXlsx")}
-          </MenuItem>
-          <MenuSeparator />
-          <MenuItem
-            disabled={exportingFormat !== null}
-            onClick={() => {
-              detached(handleExport("docx"), "TableExportMenu");
-            }}
-          >
-            {t("workspaces.views.exportDocxPlain")}
-          </MenuItem>
+        <MenuPopup className="min-w-56">
+          {TABLE_EXPORT_FORMATS.map((option) => (
+            <Fragment key={option.format}>
+              {option.separatorBefore ? <MenuSeparator /> : null}
+              <MenuItem
+                closeOnClick={false}
+                disabled={exportingFormat !== null}
+                onClick={() => {
+                  detached(handleExport(option.format), "TableExportMenu");
+                }}
+              >
+                <ExportFormatIcon
+                  Icon={option.icon}
+                  pending={exportingFormat === option.format}
+                />
+                {t(option.labelKey)}
+              </MenuItem>
+            </Fragment>
+          ))}
           <MenuItem onClick={() => setReportOpen(true)}>
+            <ExportFormatIcon Icon={DocxIcon} pending={false} />
             {t("workspaces.views.exportDocxTemplate")}
           </MenuItem>
         </MenuPopup>
@@ -1079,26 +1143,35 @@ const TASK_DATE_OPTIONS = [
 type ResolveDatePropertyLabelArgs = {
   dateProperties: WorkspaceProperty[];
   id: string;
-  t: (key: TranslationKey) => string;
 };
+
+type DatePropertyLabel =
+  | { type: "custom"; value: string }
+  | {
+      key:
+        | (typeof INTERNAL_DATE_OPTIONS)[number]["labelKey"]
+        | (typeof TASK_DATE_OPTIONS)[number]["labelKey"]
+        | "workspaces.views.selectProperty";
+      type: "translated";
+    };
 
 const resolveDatePropertyLabel = ({
   dateProperties,
   id,
-  t,
-}: ResolveDatePropertyLabelArgs) => {
+}: ResolveDatePropertyLabelArgs): DatePropertyLabel => {
   const internal = INTERNAL_DATE_OPTIONS.find((o) => o.id === id);
   if (internal) {
-    return t(internal.labelKey);
+    return { key: internal.labelKey, type: "translated" };
   }
   const taskDate = TASK_DATE_OPTIONS.find((o) => o.id === id);
   if (taskDate) {
-    return t(taskDate.labelKey);
+    return { key: taskDate.labelKey, type: "translated" };
   }
-  return (
-    dateProperties.find((p) => p.id === id)?.name ??
-    t("workspaces.views.selectProperty")
-  );
+  const propertyName = dateProperties.find((p) => p.id === id)?.name;
+  if (propertyName) {
+    return { type: "custom", value: propertyName };
+  }
+  return { key: "workspaces.views.selectProperty", type: "translated" };
 };
 
 type CalendarDatePropertyControlProps = {
@@ -1116,11 +1189,14 @@ const CalendarDatePropertyControl = ({
 }: CalendarDatePropertyControlProps) => {
   const t = useTranslations();
   const dateProperties = properties.filter((p) => p.content.type === "date");
-  const datePropertyLabel = resolveDatePropertyLabel({
+  const resolvedDatePropertyLabel = resolveDatePropertyLabel({
     dateProperties,
     id: datePropertyId,
-    t,
   });
+  const datePropertyLabel =
+    resolvedDatePropertyLabel.type === "translated"
+      ? t(resolvedDatePropertyLabel.key)
+      : resolvedDatePropertyLabel.value;
 
   return (
     <span className="flex items-center gap-1 text-xs">
@@ -1296,16 +1372,22 @@ const TimelineDatePropertyControl = ({
 }: TimelineDatePropertyControlProps) => {
   const t = useTranslations();
   const dateProperties = properties.filter((p) => p.content.type === "date");
-  const startDatePropertyLabel = resolveDatePropertyLabel({
+  const resolvedStartDatePropertyLabel = resolveDatePropertyLabel({
     dateProperties,
     id: startDatePropertyId,
-    t,
   });
-  const endDatePropertyLabel = resolveDatePropertyLabel({
+  const startDatePropertyLabel =
+    resolvedStartDatePropertyLabel.type === "translated"
+      ? t(resolvedStartDatePropertyLabel.key)
+      : resolvedStartDatePropertyLabel.value;
+  const resolvedEndDatePropertyLabel = resolveDatePropertyLabel({
     dateProperties,
     id: endDatePropertyId,
-    t,
   });
+  const endDatePropertyLabel =
+    resolvedEndDatePropertyLabel.type === "translated"
+      ? t(resolvedEndDatePropertyLabel.key)
+      : resolvedEndDatePropertyLabel.value;
 
   const dateOptions = (
     <>

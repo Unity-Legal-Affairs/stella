@@ -2,25 +2,211 @@ name: Deploy main to staging
 
 # Continuous deploy of every push to main into staging. The tagged
 # release workflow remains the production path.
+#
+# Staging can be unreachable for reasons that say nothing about the commit, so
+# an unreachable environment defers the deploy instead of failing it, and the
+# schedule below resumes the deploy once staging answers again. What still
+# fails is a commit that cannot reach staging for MAX_DEFERRAL_HOURS: that is
+# a stalled delivery rather than a passing interruption.
 
 on:
   push:
     branches: [main]
+  schedule:
+    # Resume deferred deploys once staging is reachable again.
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
-# A newer push to main supersedes an in-flight staging deploy.
+# Queue rather than cancel: build-and-deploy dispatches a promotion to the
+# infra repo and then watches it to completion. A run cancelled mid-dispatch
+# would leave that promotion in flight with nothing watching it, racing
+# whatever the next run dispatches. A dispatched promotion must always be
+# watched, so a newer push waits for the current run instead of preempting it.
 concurrency:
   group: deploy-staging
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/stella-api
 
 jobs:
+  # Tie promotion and its dependent smoke job to the current health of the
+  # staging environment.
+  staging-health:
+    name: Check staging health
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      deployments: read
+    outputs:
+      deploy: ${{ steps.decide.outputs.deploy }}
+
+    steps:
+      - name: Probe staging health
+        id: probe
+        env:
+          STAGING_HEALTH_URL: https://api-staging.stll.app/health
+        run: |
+          set -euo pipefail
+
+          readonly READY_STATUS="ready"
+          readonly NOT_READY_STATUS="not_ready"
+          readonly MAX_ATTEMPTS=3
+          readonly RETRY_SECONDS=5
+
+          response_file="$RUNNER_TEMP/staging-health.json"
+          status="$NOT_READY_STATUS"
+          served_commit=""
+          for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1)); do
+            http_status="000"
+            if ! http_status="$(
+              curl \
+                --connect-timeout 5 \
+                --max-time 10 \
+                --output "$response_file" \
+                --silent \
+                --show-error \
+                --write-out '%{http_code}' \
+                "$STAGING_HEALTH_URL"
+            )"; then
+              http_status="000"
+            fi
+
+            if [[ "$http_status" == "200" ]] &&
+              jq -e '.status == "ok"' "$response_file" >/dev/null 2>&1; then
+              status="$READY_STATUS"
+              served_commit="$(jq -r '.commit // ""' "$response_file")"
+              break
+            fi
+
+            echo "Staging health probe ${attempt}/${MAX_ATTEMPTS} returned HTTP ${http_status}."
+            if (( attempt < MAX_ATTEMPTS )); then
+              sleep "$RETRY_SECONDS"
+            fi
+          done
+
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          echo "served_commit=${served_commit}" >> "$GITHUB_OUTPUT"
+
+      # Absent staging defers; a commit that stays undeliverable fails.
+      - name: Decide deploy, defer, or escalate
+        id: decide
+        env:
+          DEPLOY_ENVIRONMENT: staging
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SERVED_COMMIT: ${{ steps.probe.outputs.served_commit }}
+          STATUS: ${{ steps.probe.outputs.status }}
+        run: |
+          set -euo pipefail
+
+          # A passing interruption resolves well inside this budget; anything
+          # longer is a stalled delivery worth waking someone.
+          readonly MAX_DEFERRAL_HOURS=12
+
+          if [[ "$STATUS" == "ready" ]]; then
+            # A push or dispatch always deploys what it carries. The schedule
+            # only resumes a deploy it can prove is missing, so an unreadable
+            # commit stamp leaves staging alone instead of redeploying it on
+            # every tick.
+            if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+              if [[ ! "$SERVED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "deploy=false" >> "$GITHUB_OUTPUT"
+                echo "Staging reported no resolvable commit, so there is nothing to resume." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              if [[ "$SERVED_COMMIT" == "$GITHUB_SHA" ]]; then
+                echo "deploy=false" >> "$GITHUB_OUTPUT"
+                echo "Staging already serves \`${GITHUB_SHA}\`; nothing to resume." >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+            fi
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Staging is not answering; workflow_dispatch bypasses the gate and deploys anyway."
+            exit 0
+          fi
+
+          echo "deploy=false" >> "$GITHUB_OUTPUT"
+
+          # Only the schedule escalates. A push has just started waiting, and
+          # the schedule revisits it well before the budget runs out, so the
+          # decision is made in one place against a measured wait.
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            # The last commit recorded as deployed. Empty before this workflow
+            # has recorded one, which reads as "still pending" and so can only
+            # escalate, never suppress.
+            deployed_sha="$(
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/deployments?environment=${DEPLOY_ENVIRONMENT}&per_page=1" \
+                --jq '.[0].sha // ""'
+            )"
+
+            if [[ "$deployed_sha" == "$GITHUB_SHA" ]]; then
+              {
+                echo "### Staging is not answering"
+                echo "Nothing is waiting: staging already has \`${GITHUB_SHA}\`, so this run stays green."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
+            # How long delivery has been blocked, which is the age of the
+            # oldest commit staging has not taken yet. Measuring the tip
+            # instead would restart the clock on every push made during one
+            # continuous outage, so the alarm would never fire. jq resolves
+            # the timestamp so the arithmetic does not depend on GNU date's -d.
+            pending_since_epoch=""
+            if [[ -n "$deployed_sha" ]]; then
+              pending_since_epoch="$(
+                gh api \
+                  "repos/${GITHUB_REPOSITORY}/compare/${deployed_sha}...${GITHUB_SHA}" \
+                  --jq '[.commits[].commit.committer.date | fromdateiso8601] | first // empty' \
+                  2>/dev/null || true
+              )"
+            fi
+
+            # Before the first recorded deployment, and if the recorded commit
+            # has since left the history, the tip is all there is to measure.
+            if [[ -z "$pending_since_epoch" ]]; then
+              pending_since_epoch="$(
+                gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" \
+                  --jq '.commit.committer.date | fromdateiso8601'
+              )"
+            fi
+
+            waited_seconds=$(( $(date -u +%s) - pending_since_epoch ))
+
+            if (( waited_seconds > MAX_DEFERRAL_HOURS * 3600 )); then
+              waited_hours=$(( waited_seconds / 3600 ))
+              {
+                echo "### Staging deploy stalled"
+                echo "Staging has not answered its health probe, and has taken no commit for ${waited_hours}h. The tip waiting on it is \`${GITHUB_SHA}\`."
+                echo "That is past the ${MAX_DEFERRAL_HOURS}h budget, so staging needs a look."
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::Staging has taken no commit for ${waited_hours}h (budget ${MAX_DEFERRAL_HOURS}h); the environment needs attention."
+              exit 1
+            fi
+          fi
+
+          {
+            echo "### Staging deploy deferred"
+            echo "Staging is not answering its health probe, so \`${GITHUB_SHA}\` was not deployed."
+            echo "The scheduled run resumes it automatically once staging is reachable; this run stays green because the commit itself is fine."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::Staging is not answering; deploy of ${GITHUB_SHA} deferred until it does."
+
   build-and-deploy:
     name: Build + deploy staging
-    if: github.ref == 'refs/heads/main'
+    needs: staging-health
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.staging-health.outputs.deploy == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     permissions:
@@ -29,6 +215,7 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
+      deployments: write
 
     steps:
       - name: Resolve synthetic ref
@@ -50,7 +237,7 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Login to GHCR
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -86,39 +273,61 @@ jobs:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
 
-      - name: Mint deployment token
-        id: deployment-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.STELLA_RELEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.STELLA_RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ vars.STAGING_DEPLOY_REPOSITORY }}
-          permission-actions: write
-
-      - name: Request staging deployment
+      - name: Check staging deployment target is configured
         env:
-          GH_TOKEN: ${{ steps.deployment-token.outputs.token }}
           DEPLOY_REPOSITORY: ${{ github.repository_owner }}/${{ vars.STAGING_DEPLOY_REPOSITORY }}
           DEPLOY_WORKFLOW: ${{ vars.STAGING_DEPLOY_WORKFLOW }}
-          RELEASE_REF: ${{ steps.ref.outputs.release_ref }}
-          GIT_SHA: ${{ github.sha }}
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           if [[ -z "${DEPLOY_REPOSITORY#*/}" || -z "$DEPLOY_WORKFLOW" ]]; then
             echo "::error::Staging deployment target is not configured." >&2
             exit 1
           fi
 
-          gh api --method POST \
-            "/repos/${DEPLOY_REPOSITORY}/actions/workflows/${DEPLOY_WORKFLOW}/dispatches" \
-            -f "ref=main" \
-            -f "inputs[release_ref]=${RELEASE_REF}" \
-            -f "inputs[target_environment]=staging" \
-            -f "inputs[image_digest]=${IMAGE_DIGEST}" \
-            -f "inputs[git_sha]=${GIT_SHA}" \
-            -f "inputs[run_migrations]=true" \
-            -f "inputs[frontend]=true"
+      # Watches the dispatched run to completion: a promote that fails after
+      # the dispatch is accepted must fail this job, so verify-staging is
+      # skipped by `needs` instead of blocking on a commit that will never
+      # be served.
+      - name: Deploy to staging
+        uses: ./.github/actions/promote-dispatch
+        with:
+          app-client-id: ${{ vars.STELLA_RELEASE_APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.STELLA_RELEASE_APP_PRIVATE_KEY }}
+          infra-repo: ${{ github.repository_owner }}/${{ vars.STAGING_DEPLOY_REPOSITORY }}
+          workflow-file: ${{ vars.STAGING_DEPLOY_WORKFLOW }}
+          release-ref: ${{ steps.ref.outputs.release_ref }}
+          target-environment: staging
+          image-digest: ${{ steps.build.outputs.digest }}
+          git-sha: ${{ github.sha }}
+
+      # The commit staging is running, recorded where it outlives this run:
+      # the health gate reads it to tell a deploy that is waiting from one
+      # that is stuck.
+      - name: Record staging deployment
+        env:
+          DEPLOY_ENVIRONMENT: staging
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          deployment_id="$(
+            jq -n \
+              --arg ref "$GITHUB_SHA" \
+              --arg environment "$DEPLOY_ENVIRONMENT" \
+              '{
+                ref: $ref,
+                environment: $environment,
+                auto_merge: false,
+                required_contexts: [],
+                production_environment: false,
+                description: "Continuous deploy of main to staging"
+              }' |
+              gh api "repos/${GITHUB_REPOSITORY}/deployments" \
+                --method POST --input - --jq '.id'
+          )"
+
+          jq -n '{state: "success", environment_url: "https://staging.stll.app"}' |
+            gh api "repos/${GITHUB_REPOSITORY}/deployments/${deployment_id}/statuses" \
+              --method POST --input - >/dev/null
 
   # Post-deploy verification: authenticate via the secret-guarded
   # /smoke/session endpoint and click through the deployed app so a
@@ -139,12 +348,10 @@ jobs:
           persist-credentials: false
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version-file: "package.json"
+        uses: stella/.github/actions/setup-bun-cached@859a61ee0a799ba1028281329555cadee15bfc4f
 
       - name: Install dependencies
-        run: bun ci --ignore-scripts
+        run: bash scripts/bun-ci-retry.sh --ignore-scripts
         env:
           NPM_TOKEN: ""
 

@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   APIError,
   internalToolErrorMessage,
+  shouldRetryAPIRequest,
   toAPIError,
   unwrapEden,
 } from "./api";
@@ -13,6 +14,36 @@ import {
   toAuthClientError,
 } from "./auth";
 import { userErrorFromThrown, userErrorMessage } from "./user-safe";
+
+describe("API request retries", () => {
+  test.each([429, 500, 503])("retries transient API status %i", (status) => {
+    expect(
+      shouldRetryAPIRequest(
+        0,
+        new APIError({ message: "Transient failure", status }),
+      ),
+    ).toBe(true);
+  });
+
+  test.each([400, 401, 403, 404, 422])(
+    "does not retry permanent API status %i",
+    (status) => {
+      expect(
+        shouldRetryAPIRequest(
+          0,
+          new APIError({ message: "Permanent failure", status }),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  test("retries unknown transport errors but stops at the retry limit", () => {
+    const transportError = new TypeError("Network unavailable");
+
+    expect(shouldRetryAPIRequest(2, transportError)).toBe(true);
+    expect(shouldRetryAPIRequest(3, transportError)).toBe(false);
+  });
+});
 
 describe("toAPIError", () => {
   test("localizes string payloads by status and preserves the raw message", () => {
@@ -423,16 +454,25 @@ describe("toAuthClientError", () => {
     }
   });
 
-  test("localizes known auth client codes", () => {
+  test.each([
+    [
+      "DISPOSABLE_EMAIL_NOT_ALLOWED",
+      "Temporary email addresses are not allowed. Use a permanent email address.",
+    ],
+    [
+      "YOU_ARE_NOT_A_MEMBER_OF_THIS_ORGANIZATION",
+      "You are not a member of this organization.",
+    ],
+  ])("localizes the known auth client code %s", (code, expected) => {
     const error = toAuthClientError({
-      code: "YOU_ARE_NOT_A_MEMBER_OF_THIS_ORGANIZATION",
-      message: "No membership",
+      code,
+      message: "Raw auth error",
       status: 403,
       statusText: "Forbidden",
     });
 
     expect(AuthClientError.is(error)).toBe(true);
-    expect(error.message).toBe("You are not a member of this organization.");
+    expect(error.message).toBe(expected);
   });
 });
 

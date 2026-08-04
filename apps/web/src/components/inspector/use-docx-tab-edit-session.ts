@@ -5,16 +5,16 @@ import { useTranslations } from "use-intl";
 import type { DocxCompatibility } from "@stll/folio-react";
 import { stellaToast } from "@stll/ui/components/toast";
 
-import { useInspectorStore } from "@/components/inspector/inspector-store";
+import type { DocxBrowserEditorActions } from "@/components/docx/docx-browser-editor";
+import { getDocxEditBlockReason } from "@/components/docx/docx-browser-editor.logic";
+import { useInspectorCommandStore } from "@/components/inspector/inspector-command-store";
 import type {
   FileTab,
   InspectorTab,
-} from "@/components/inspector/inspector-store";
+} from "@/components/inspector/inspector-tabs-store";
 import { useExternalSyncEffect, useMountEffect } from "@/hooks/use-effect";
 import { DOCX_MIME } from "@/lib/consts";
 import { detached } from "@/lib/detached";
-import type { DocxBrowserEditorActions } from "@/routes/_protected.workspaces/$workspaceId/-components/docx/docx-browser-editor";
-import { getDocxEditBlockReason } from "@/routes/_protected.workspaces/$workspaceId/-components/docx/docx-browser-editor.logic";
 
 type UseDocxTabEditSessionOptions = {
   tabs: readonly InspectorTab[];
@@ -94,8 +94,12 @@ export const useDocxTabEditSession = ({
     }
   });
 
-  const pendingDocxEditTabId = useInspectorStore((s) => s.pendingDocxEditTabId);
-  const clearDocxEditRequest = useInspectorStore((s) => s.clearDocxEditRequest);
+  const pendingDocxEditTabId = useInspectorCommandStore(
+    (s) => s.pendingDocxEditTabId,
+  );
+  const clearDocxEditRequest = useInspectorCommandStore(
+    (s) => s.clearDocxEditRequest,
+  );
   useExternalSyncEffect(() => {
     if (pendingDocxEditTabId === null) {
       return;

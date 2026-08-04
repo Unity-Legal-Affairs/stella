@@ -1,11 +1,10 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 
 import {
   legislationDocuments,
   legislationIndexJobs,
   legislationSources,
 } from "@/api/db/schema";
-import { readCorpusText } from "@/api/handlers/case-law/corpus-storage";
 import { redistributableLegislationSource } from "@/api/handlers/legislation/redistribution";
 import type { SafeId } from "@/api/lib/branded-types";
 import type { CorpusDocumentPayload } from "@/api/lib/corpus-index/core";
@@ -17,6 +16,7 @@ import {
   timestampCasToken,
   type TimestampCasToken,
 } from "@/api/lib/db/timestamp-cas";
+import { readCorpusText } from "@/api/lib/legal-search/corpus-storage";
 
 /**
  * corpus index projection for the `legislation` family. Domain adapter over the
@@ -128,8 +128,9 @@ const indexer = createCorpusIndexer<"legislationDocument", IndexableRow>({
   // row-by-row heap filtering; the selective content-hash index is what
   // these scans need.
   selectMissing: async (scopedDb, { generation, limit }) => {
-    // Two arms for the same reason as the case-law twin: the never-indexed
-    // arm rides the partial pending index; the older-generation arm is only
+    // Hash-null rows are the durable pending set: new rows and every refresh
+    // clear this field while retaining the old generation pointer needed to
+    // delete a moved jurisdiction copy. The older-generation arm is only
     // non-empty across a generation cutover.
     const fresh = await scopedDb((tx) =>
       tx
@@ -143,7 +144,7 @@ const indexer = createCorpusIndexer<"legislationDocument", IndexableRow>({
           and(
             hasContent,
             redistributableLegislationSource,
-            isNull(legislationDocuments.indexedGeneration),
+            isNull(legislationDocuments.indexedHash),
           ),
         )
         .limit(limit),
@@ -163,6 +164,7 @@ const indexer = createCorpusIndexer<"legislationDocument", IndexableRow>({
           and(
             hasContent,
             redistributableLegislationSource,
+            isNotNull(legislationDocuments.indexedHash),
             sql`${legislationDocuments.indexedGeneration} <> (${generation} || '_' || lower(${legislationDocuments.country}))`,
           ),
         )
@@ -188,6 +190,7 @@ const indexer = createCorpusIndexer<"legislationDocument", IndexableRow>({
           and(
             hasContent,
             redistributableLegislationSource,
+            isNotNull(legislationDocuments.indexedHash),
             sql`${legislationDocuments.indexedGeneration} = (${generation} || '_' || lower(${legislationDocuments.country}))`,
             sql`${legislationDocuments.indexedHash} IS DISTINCT FROM ${legislationDocuments.contentHash}`,
           ),
@@ -204,6 +207,7 @@ const indexer = createCorpusIndexer<"legislationDocument", IndexableRow>({
     );
     return fallback.at(0)?.fulltext ?? null;
   },
+  generationProjectionIndexIds: () => [],
   markIndexedBatch: async (tx, { rows, indexId, now }) => {
     if (rows.length === 0) {
       return new Set();
@@ -216,7 +220,7 @@ const indexer = createCorpusIndexer<"legislationDocument", IndexableRow>({
     const tuples = sql.join(
       rows.map(
         (row) =>
-          sql`(${row.id}::uuid, ${row.contentHash}::text, ${row.indexedHash}::text, ${row.indexedGeneration}::text, ${row.updatedAtToken}::timestamp)`,
+          sql`(${row.id}::uuid, ${row.contentHash}::text, ${row.indexedHash}::text, ${row.indexedGeneration}::text, ${row.updatedAtToken}::timestamptz)`,
       ),
       sql`, `,
     );
@@ -224,7 +228,7 @@ const indexer = createCorpusIndexer<"legislationDocument", IndexableRow>({
       UPDATE ${legislationDocuments} AS d
       SET indexed_hash = v.content_hash,
           indexed_generation = ${indexId},
-          indexed_at = ${now.toISOString()}::timestamp
+          indexed_at = ${now.toISOString()}::timestamptz
       FROM (VALUES ${tuples}) AS v(id, content_hash, expected_hash, expected_generation, expected_updated)
       WHERE d.id = v.id
         AND d.indexed_hash IS NOT DISTINCT FROM v.expected_hash

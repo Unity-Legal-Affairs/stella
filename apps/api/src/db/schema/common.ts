@@ -10,15 +10,18 @@ import type { PersistedDecisionAnalysis } from "@stll/legal-ast/analysis";
 import type { DocumentAst } from "@stll/legal-ast/document-ast";
 
 import { organization, user } from "@/api/db/auth-schema";
-import { jsonb } from "@/api/db/columns";
+import { jsonb, timestamptz } from "@/api/db/columns";
 import {
   agentSkillPolicies,
   agentSkillResourcePolicies,
   chatMessageSearchDocumentPolicies,
   chatMessagePolicies,
+  chatTurnPolicies,
   chatThreadCompactionPolicies,
+  chatThreadPreviewPassagePolicies,
   chatThreadPolicies,
   chatThreadSearchDocumentPolicies,
+  caseLawIngestionOnlyPolicies,
   fileChatThreadPolicies,
   globalCaseLawPolicies,
   mcpConnectorPolicies,
@@ -27,12 +30,15 @@ import {
   mcpUserConnectionPolicies,
   organizationCheck,
   orgPolicies,
+  orgReadOnlyPolicies,
+  savedSearchPolicies,
   sharepointConnectionPolicies,
   sharepointOAuthStatePolicies,
   stella,
   templateChatThreadPolicies,
   userPolicies,
   workspaceIdCheck,
+  workspaceCheck,
   workspaceViewTemplatePolicies,
   wsOrganizationPolicies,
   wsOrganizationReadOnlyPolicies,
@@ -52,29 +58,31 @@ import type {
   PropertyContent,
   PropertyTool,
 } from "@/api/db/schema-validators";
-import type { CorpusSourceDescriptor } from "@/api/handlers/case-law/corpus-source";
-import type { EmptyAst } from "@/api/handlers/case-law/ingestion/adapter";
-import type { DecisionSection } from "@/api/handlers/case-law/types";
 import type {
   ChatCompactionSummary,
   ChatMessageRole,
   PersistedChatMessageContent,
 } from "@/api/handlers/chat/types";
 import type { ClauseMetadata } from "@/api/handlers/clauses/metadata";
-import type {
-  PlaybookDefinitionStatus,
-  PlaybookPositions,
-  PlaybookScope,
-} from "@/api/handlers/playbooks/positions";
 import type { TemplateRecipeDefinition } from "@/api/handlers/template-recipes/definition";
 import { createSafeId } from "@/api/lib/branded-types";
 import type { SafeId, SafeIdType } from "@/api/lib/branded-types";
 import type { ClauseBody } from "@/api/lib/clauses/types";
 import type { DocumentSource } from "@/api/lib/document-source";
 import type { TemplateManifest } from "@/api/lib/docx/types";
+import type { CorpusSourceDescriptor } from "@/api/lib/legal-search/corpus-source";
+import type {
+  DecisionSection,
+  EmptyAst,
+} from "@/api/lib/legal-search/document-types";
 import type { CentsAmount } from "@/api/lib/money";
 import { unsafeCents } from "@/api/lib/money";
 import type { ViewLayout, ViewTemplateProperty } from "@/api/lib/views-schema";
+import type {
+  PlaybookDefinitionStatus,
+  PlaybookPositions,
+  PlaybookScope,
+} from "@/api/lib/workflow/playbook-positions";
 
 /** Metadata stored on link entities created by the web clipper. */
 export type LinkMetadata = {
@@ -228,6 +236,15 @@ export const ACCOUNT_DELETION_REQUEST_STATUSES = [
 export type AccountDeletionRequestStatus =
   (typeof ACCOUNT_DELETION_REQUEST_STATUSES)[number];
 
+export const ENTITY_DELETION_CLEANUP_STATUSES = [
+  "pending",
+  "processing",
+  "completed",
+  "failed",
+] as const;
+export type EntityDeletionCleanupStatus =
+  (typeof ENTITY_DELETION_CLEANUP_STATUSES)[number];
+
 export type AccountDeletionStorageCleanup = {
   s3Keys: string[];
 };
@@ -372,6 +389,7 @@ export {
   p,
   panic,
   sql,
+  timestamptz,
   unsafeCents,
   user,
 };
@@ -380,10 +398,13 @@ export {
   agentSkillPolicies,
   agentSkillResourcePolicies,
   chatMessagePolicies,
+  chatTurnPolicies,
   chatMessageSearchDocumentPolicies,
   chatThreadCompactionPolicies,
+  chatThreadPreviewPassagePolicies,
   chatThreadPolicies,
   chatThreadSearchDocumentPolicies,
+  caseLawIngestionOnlyPolicies,
   fileChatThreadPolicies,
   globalCaseLawPolicies,
   mcpConnectorPolicies,
@@ -392,12 +413,15 @@ export {
   mcpUserConnectionPolicies,
   organizationCheck,
   orgPolicies,
+  orgReadOnlyPolicies,
+  savedSearchPolicies,
   sharepointConnectionPolicies,
   sharepointOAuthStatePolicies,
   stella,
   templateChatThreadPolicies,
   userPolicies,
   workspaceIdCheck,
+  workspaceCheck,
   workspaceViewTemplatePolicies,
   wsOrganizationPolicies,
   wsOrganizationReadOnlyPolicies,

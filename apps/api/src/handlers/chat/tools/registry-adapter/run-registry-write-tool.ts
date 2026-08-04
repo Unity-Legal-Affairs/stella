@@ -1,7 +1,7 @@
 import { panic, Result } from "better-result";
 
-import type { ChatRefRegistry } from "@/api/handlers/chat/tools/execute/ref-registry";
 import { captureError } from "@/api/lib/analytics/capture";
+import type { ChatRefRegistry } from "@/api/lib/chat/ref-registry";
 import { ChatToolError } from "@/api/lib/errors/tagged-errors";
 import { BILLING_TOOL_HANDLERS } from "@/api/mcp/billing-tools";
 import { CAPABILITY_TOOL_HANDLERS } from "@/api/mcp/capability-tools";
@@ -58,6 +58,7 @@ const REGISTRY_WRITE_TOOL_HANDLERS = {
   manage_organization: RESEARCH_ADMIN_TOOL_HANDLERS.manage_organization,
   set_practice_jurisdictions: STELLA_TOOL_HANDLERS.set_practice_jurisdictions,
   fill_template: TEMPLATE_TOOL_HANDLERS.fill_template,
+  save_filled_template: TEMPLATE_TOOL_HANDLERS.save_filled_template,
   save_template: TEMPLATE_TOOL_HANDLERS.save_template,
   // Non-projectable (`chatProjectable: false`): the orchestrator refuses it
   // before reaching a handler, but the map stays exhaustive over every write
